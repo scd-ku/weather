@@ -223,7 +223,7 @@
           <option value="japan">日本全体地図</option>
         </select>
       </label>
-      <label class="wideLabel">高さ倍率 <span id="cloud3dHeightScaleVal" class="value">55</span><input id="cloud3dHeightScale" type="range" min="5" max="160" step="1" value="55"></label>
+      <label class="wideLabel">高さ倍率 <span id="cloud3dHeightScaleVal" class="value">20</span><input id="cloud3dHeightScale" type="range" min="5" max="160" step="1" value="20"></label>
       <label class="wideLabel">解像度 <span id="cloud3dResolutionVal" class="value">96</span><input id="cloud3dResolution" type="range" min="48" max="180" step="4" value="96"></label>
       <label><input id="cloud3dAutoToggle" type="checkbox" checked> 時刻に連動して自動作成</label>
       <label><input id="cloud3dWireToggle" type="checkbox"> ワイヤー表示</label>
@@ -1409,7 +1409,7 @@ function ensureCloud3dRenderer(){
     cloud3d.scene = new THREE.Scene();
     cloud3d.scene.background = new THREE.Color(0xeaf6ff);
     cloud3d.camera = new THREE.PerspectiveCamera(45, host.clientWidth / host.clientHeight, 0.1, 3000);
-    cloud3d.camera.position.set(0, -230, 160);
+    cloud3d.camera.position.set(0, -145, 100);
     cloud3d.renderer = new THREE.WebGLRenderer({antialias:true});
     cloud3d.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
     cloud3d.renderer.setSize(host.clientWidth, host.clientHeight);
@@ -1417,7 +1417,7 @@ function ensureCloud3dRenderer(){
     host.appendChild(cloud3d.renderer.domElement);
     if(!THREE.OrbitControls) throw new Error('OrbitControlsを読み込めませんでした。Three.js examples のCDN読み込みを確認してください。');
     cloud3d.controls = new THREE.OrbitControls(cloud3d.camera, cloud3d.renderer.domElement);
-    cloud3d.controls.target.set(0,0,20);
+    cloud3d.controls.target.set(0,0,12);
     cloud3d.controls.enableDamping = true;
     const amb = new THREE.AmbientLight(0xffffff, 0.8);
     cloud3d.scene.add(amb);
@@ -1450,8 +1450,8 @@ function resizeCloud3dRenderer(){
 
 function resetCloud3dView(){
   ensureCloud3dRenderer();
-  cloud3d.camera.position.set(0, -230, 160);
-  cloud3d.controls.target.set(0,0,20);
+  cloud3d.camera.position.set(0, -145, 100);
+  cloud3d.controls.target.set(0,0,12);
   cloud3d.controls.update();
 }
 
@@ -1472,7 +1472,7 @@ function createCloud3dMeshFromCanvas(canvas, mosaic=null, baseCanvas=null){
   if(cloud3d.baseTexture){ cloud3d.baseTexture.dispose(); }
 
   const res = +document.getElementById('cloud3dResolution').value || 96;
-  const heightScale = +document.getElementById('cloud3dHeightScale').value || 55;
+  const heightScale = +document.getElementById('cloud3dHeightScale').value || 20;
   const cloudOpacity = +document.getElementById('cloud3dOpacity').value || 0.68;
   const baseOpacity = +document.getElementById('cloud3dBaseOpacity').value || 1.0;
   const wire = document.getElementById('cloud3dWireToggle').checked;
