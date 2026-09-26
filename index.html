@@ -1,0 +1,1784 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>雨雲レーダー・天気図・時系列グラフ 3D地図面つき雲頂強調版</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.css" />
+  <script src="https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.9/dist/chart.umd.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/build/three.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+  <style>
+    :root{
+      --bg:#f5f7fb; --panel:#fff; --ink:#1f2937; --muted:#64748b; --line:#dbe3ef; --accent:#2563eb;
+    }
+    *{box-sizing:border-box}
+    body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Hiragino Sans","Yu Gothic",Meiryo,sans-serif;background:var(--bg);color:var(--ink)}
+    header{padding:8px 14px;background:linear-gradient(90deg,#eff6ff,#fff);border-bottom:1px solid var(--line)}
+    h1{font-size:16px;margin:0 0 3px} .note{font-size:11.5px;color:var(--muted);line-height:1.45}
+    main{padding:6px;display:grid;gap:6px}
+    .toolbar,.sliderBox{background:var(--panel);border:1px solid var(--line);border-radius:9px;padding:5px 8px;box-shadow:0 2px 8px #00000008}
+    .advNote{font-size:11px;color:var(--muted);flex-basis:100%}
+    .toolbar{display:flex;gap:5px 12px;align-items:center;flex-wrap:wrap}
+    label{font-size:12px;color:#334155} select,input[type="checkbox"]{font-size:12px} select{padding:2px 6px;border:1px solid var(--line);border-radius:6px;background:white}
+    .grid{display:grid;grid-template-columns:1fr 1fr;gap:6px}
+    .card{background:var(--panel);border:1px solid var(--line);border-radius:9px;overflow:hidden;box-shadow:0 2px 8px #00000008}
+    .cardHead{display:flex;justify-content:space-between;align-items:center;gap:8px;padding:4px 8px;border-bottom:1px solid var(--line)}
+    .cardHead h2{font-size:13px;margin:0}.status{font-size:10.5px;color:var(--muted);text-align:right}
+    .map{height:44vh;min-height:300px;background:#dbeafe}
+    .chartWrap{height:240px;padding:4px 6px}
+    /* 折りたたみの詳細設定（普段は畳んで上部を占有しない） */
+    details.adv{flex:1 0 100%;margin:0}
+    details.adv>summary{cursor:pointer;font-size:11.5px;color:var(--accent);padding:1px 0;user-select:none;list-style:none}
+    details.adv>summary::-webkit-details-marker{display:none}
+    details.adv>summary::before{content:'▸ ';font-size:10px}
+    details.adv[open]>summary::before{content:'▾ '}
+    details.adv .advBody{display:flex;flex-wrap:wrap;gap:4px 12px;padding:5px 0 1px;align-items:center}
+    .toolbar input[type="range"],.advBody input[type="range"]{width:104px;vertical-align:middle}
+    /* グラフ面はクリック／タッチで時刻を操作。touch-action:pan-y で縦スクロールは残しつつ横ドラッグを拾う */
+    .chartWrap canvas{touch-action:pan-y;cursor:ew-resize}
+    .chartWrap canvas.scrubbing{cursor:grabbing}
+    input[type="range"]{width:100%}.timeLabel{font-weight:700;color:var(--accent)}
+    /* 選択時刻＋スライダーを1行に */
+    .timeRow{display:flex;align-items:center;gap:8px}
+    .timeRow .timeLead{font-size:11.5px;color:var(--muted);white-space:nowrap}
+    .timeRow .timeLabel{font-size:14px;white-space:nowrap;min-width:96px}
+    .timeRow #timeSlider{flex:1;min-width:120px;margin:0}
+    /* 凡例は1行にまとめる */
+    .legendRow{display:flex;align-items:center;flex-wrap:wrap;gap:3px 10px;margin-top:5px;font-size:11px;color:var(--muted)}
+    .legendRow .sep{width:1px;height:13px;background:var(--line)}
+    .legendRow .wbgtLead{font-weight:700;color:#334155}
+    .chip{display:inline-flex;align-items:center;gap:5px}.sw{width:16px;height:3px;border-radius:999px;background:#999}.sw.temp{background:#ef4444}.sw.hum{background:#2563eb}.sw.rain{background:#0ea5e9}
+    .leaflet-control-attribution{font-size:10px}.error{color:#b91c1c;font-size:13px;white-space:pre-wrap}
+    .leaflet-pane.rain-pane-strong img{filter:saturate(2.8) contrast(2.2) brightness(1.08)}
+    .leaflet-pane.rain-nd-pane img{filter:contrast(1.15) brightness(1.05)}
+    .leaflet-pane.wx-pane img{filter:saturate(1.05) contrast(1.05)}
+    .leaflet-pane.himawari-vis-pane img{filter:grayscale(0.10) contrast(1.25) brightness(1.08)}
+    .leaflet-pane.himawari-cloud-pane img{filter:saturate(1.25) contrast(1.18) brightness(1.02)}
+    .value{display:inline-block;min-width:3.2em;text-align:right;color:#2563eb;font-weight:700}
+    .wideLabel{min-width:0}
+    .threeControls input[type="range"]{width:104px;vertical-align:middle}
+    .obs-dot{background:#ef4444;border:3px solid #fff;border-radius:999px;box-shadow:0 0 0 2px #11182755}
+    .obs-label{background:#ffffffee;border:1px solid #94a3b8;border-radius:6px;padding:2px 6px;font-size:12px;font-weight:700;color:#1f2937;box-shadow:0 2px 8px #00000022;white-space:nowrap}
+    /* 地図に載せる暑さ指数(WBGT)の数値ラベル */
+    .wbgt-label{background:transparent;border:none}
+    .wbgt-label .wbgt-num{display:inline-block;background:#fffffff2;border:1.5px solid #64748b;border-radius:7px;padding:1px 7px;font-size:15px;line-height:1.35;letter-spacing:.2px;text-shadow:0 1px 2px #ffffff,0 -1px 2px #ffffff,1px 0 2px #ffffff,-1px 0 2px #ffffff;box-shadow:0 2px 8px #0000002e;white-space:nowrap}
+    .wbgt-label .wbgt-level,.wbgt-label .wbgt-special{display:block;margin-top:2px;font-size:10.5px;font-weight:700;text-align:center;background:#0f172a;color:#fff;border-radius:5px;padding:1px 5px;white-space:nowrap}
+    .wbgt-label .wbgt-special{background:#000;color:#fff;border:1px solid #fff;box-shadow:0 0 0 2px #000}
+    /* 多地点表示：色と数値のみのコンパクトなラベル */
+    .wbgt-mini{background:transparent;border:none}
+    .wbgt-mini .wbgt-dot{display:inline-block;background:#ffffffe8;border:1px solid #94a3b8;border-radius:5px;padding:0 4px;font-size:12.5px;line-height:1.3;text-shadow:0 1px 1px #fff,0 -1px 1px #fff,1px 0 1px #fff,-1px 0 1px #fff;box-shadow:0 1px 4px #0000002b;white-space:nowrap}
+    /* 全国用の小さめ文字（数値が重なりにくいように） */
+    .wbgt-mini .wbgt-dot.tiny{font-size:9px;padding:0 2px;border-radius:4px;border-color:#b8c2d0;box-shadow:0 1px 2px #00000022}
+    .wbgt-mini .wbgt-dot-special{background:#000;border-color:#000;color:#fff !important;box-shadow:0 0 0 1px #fff,0 1px 5px #0000005c}
+    /* 暑さ指数の色区分凡例：1行のチップ表示でコンパクトに */
+    .wbgtScale{display:flex;flex-wrap:wrap;gap:3px}
+    .wbgtScale .wchip{font-size:10px;line-height:1.6;padding:0 7px;border-radius:999px;white-space:nowrap;font-weight:700}
+    .wbgtNote{font-size:11.5px;color:#334155;line-height:1.55}
+    .sliderBox details.adv .advBody{display:block}
+    .sliderBox details.adv #debugBox{margin-top:5px}
+
+    .threeWrap{height:460px;min-height:360px;background:linear-gradient(180deg,#e0f2fe,#f8fafc);position:relative}
+    #cloud3dCanvas{width:100%;height:100%;display:block}
+    .threeControls{display:flex;gap:5px 12px;align-items:center;flex-wrap:wrap;padding:7px 10px;border-bottom:1px solid var(--line);background:#ffffffdd}
+    .threeStatus{font-size:11px;color:var(--muted);padding:6px 10px;border-top:1px solid var(--line);background:#fff;white-space:pre-wrap;max-height:76px;overflow:auto}
+    .smallBtn{padding:3px 9px;border:1px solid #94a3b8;border-radius:6px;background:#fff;cursor:pointer;font-size:12px}
+    .smallBtn:hover{background:#eff6ff}
+    @media(max-width:900px){.grid{grid-template-columns:1fr}.map{height:40vh;min-height:260px}.threeWrap{height:380px}.chartWrap{height:220px}}
+
+    /* App information controls */
+    .appTitleRow{display:flex;align-items:center;gap:7px;min-width:0}
+    .appTitleRow h1{margin:0;min-width:0}
+    .appIconBtn{width:28px;height:28px;flex:0 0 28px;border:1px solid #b8c7dc;border-radius:8px;background:#fff;color:#1e3a5f;display:inline-grid;place-items:center;cursor:pointer;padding:0;box-shadow:0 1px 3px #0000000d}
+    .appIconBtn:hover{background:#eff6ff;border-color:#93b4e7}
+    .appIconBtn:focus-visible{outline:2px solid var(--accent);outline-offset:2px}
+    .qrGlyph{width:14px;height:14px;display:grid;grid-template-columns:repeat(3,4px);grid-template-rows:repeat(3,4px);gap:1px}
+    .qrGlyph i{display:block;border:1.5px solid currentColor}
+    .qrGlyph i:nth-child(4){border:0;background:currentColor;transform:scale(.55)}
+    .helpGlyph{font-weight:800;font-size:17px;line-height:1}
+    .appModal{position:fixed;inset:0;display:none;align-items:center;justify-content:center;padding:18px;z-index:10000}
+    .appModal.isOpen{display:flex}
+    .appModalBackdrop{position:absolute;inset:0;background:#0f172acc;backdrop-filter:blur(2px)}
+    .appModalPanel{position:relative;width:min(92vw,560px);max-height:min(88vh,760px);overflow:auto;background:#fff;border-radius:14px;border:1px solid #dbe3ef;box-shadow:0 24px 70px #0005;padding:18px 20px 20px}
+    .appModalPanel h2{font-size:18px;margin:0 38px 12px 0}
+    .appModalPanel h3{font-size:14px;margin:15px 0 5px}
+    .appModalPanel p,.appModalPanel li{font-size:13px;line-height:1.7}
+    .appModalPanel ul,.appModalPanel ol{padding-left:1.4em}
+    .appModalClose{position:absolute;top:10px;right:10px;width:32px;height:32px;border:0;border-radius:8px;background:#eef2f7;color:#334155;font-size:20px;cursor:pointer}
+    .appModalClose:hover{background:#e2e8f0}
+    .qrPanel{text-align:center;width:min(92vw,460px)}
+    .qrImage{display:block;width:min(68vw,360px);height:auto;aspect-ratio:1;margin:8px auto 12px;border:10px solid #fff;box-shadow:0 0 0 1px #dbe3ef}
+    .qrUrl{display:inline-block;font-size:12px;color:#2563eb;word-break:break-all}
+    .appCopyright{position:fixed;right:8px;bottom:6px;z-index:9000;font-size:10px;line-height:1.2;color:#526278;background:#ffffffd9;border:1px solid #dbe3ef;border-radius:6px;padding:3px 6px;pointer-events:none;backdrop-filter:blur(3px)}
+    body.modalOpen{overflow:hidden}
+    @media(max-width:640px){
+      header{padding:7px 9px}
+      .appTitleRow{gap:5px}
+      .appTitleRow h1{font-size:14px;line-height:1.3}
+      .appIconBtn{width:26px;height:26px;flex-basis:26px}
+      .appCopyright{font-size:8.5px;max-width:72vw}
+    }
+  </style>
+</head>
+<body>
+<header>
+  <div class="appTitleRow">
+    <button id="qrBtn" class="appIconBtn" type="button" aria-label="このアプリのQRコードを表示" title="QRコード">
+      <span class="qrGlyph" aria-hidden="true"><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i><i></i></span>
+    </button>
+    <h1>雨雲レーダー・気象庁天気図・温度湿度降雨量グラフ</h1>
+    <button id="helpBtn" class="appIconBtn" type="button" aria-label="このアプリの特徴と使い方を表示" title="ヘルプ">
+      <span class="helpGlyph" aria-hidden="true">?</span>
+    </button>
+  </div>
+  <div class="note">左＝日本全体／右＝選択地域。<b>グラフ上をクリック（スマホはタッチ）して左右にドラッグ</b>、またはスライダーで時刻を変えると、雨雲・天気図・衛星・暑さ指数が連動します。</div>
+</header>
+<main>
+  <section class="toolbar">
+    <label>右側の地域：
+      <select id="regionSelect">
+        <option value="kagawa">香川県・高松</option>
+        <option value="tokyo">東京都心</option>
+        <option value="osaka">大阪</option>
+        <option value="koch">高知</option>
+        <option value="fukuoka">福岡</option>
+        <option value="sapporo">札幌</option>
+        <option value="okinawa">那覇</option>
+      </select>
+    </label>
+    <label><input id="rainToggle" type="checkbox" checked> 雨雲</label>
+    <label><input id="chartToggle" type="checkbox" checked> 天気図</label>
+    <label><input id="wbgtToggle" type="checkbox" checked> 暑さ指数</label>
+    <label><input id="himawariVisibleToggle" type="checkbox"> ひまわり可視</label>
+    <label><input id="himawariCloudTopToggle" type="checkbox"> 雲頂強調</label>
+    <label><input id="rainEnhance" type="checkbox" checked> 雨雲を強調</label>
+    <label>雨雲表示：
+      <select id="radarMode">
+        <option value="both" selected>降水＋欠測域</option>
+        <option value="hrpns">降水のみ</option>
+        <option value="hrpns_nd">欠測域のみ</option>
+      </select>
+    </label>
+    <button id="reloadBtn" class="smallBtn">再読み込み</button>
+    <details class="adv">
+      <summary>詳細設定（透明度・天気図の位置合わせ）</summary>
+      <div class="advBody">
+        <label>衛星透明度 <input id="himawariOpacity" type="range" min="0" max="1" step="0.05" value="0.55"></label>
+        <label>雨雲透明度 <input id="rainOpacity" type="range" min="0" max="1" step="0.05" value="1"></label>
+        <label>天気図透明度 <input id="wxOpacity" type="range" min="0" max="1" step="0.05" value="0.34"></label>
+        <span class="advNote">天気図は加工せず基準にし、地図・雨雲・衛星・暑さ指数を天気図の図法へ再投影して重ねています。輪郭がずれる場合はここで合わせてください：</span>
+        <label>地図の合わせ 倍率 <span id="wxScaleVal" class="value">1.000</span><input id="wxScale" type="range" min="0.85" max="1.20" step="0.002" value="1.0"></label>
+        <label>東西 <span id="wxShiftXVal" class="value">0.000</span><input id="wxShiftX" type="range" min="-0.12" max="0.12" step="0.002" value="0"></label>
+        <label>南北 <span id="wxShiftYVal" class="value">0.000</span><input id="wxShiftY" type="range" min="-0.12" max="0.12" step="0.002" value="0"></label>
+        <button id="wxResetBtn" type="button" class="smallBtn">天気図位置リセット</button>
+      </div>
+    </details>
+  </section>
+
+  <section class="sliderBox">
+    <div class="timeRow">
+      <span class="timeLead">選択時刻</span>
+      <span class="timeLabel" id="selectedTime">読み込み中...</span>
+      <input id="timeSlider" type="range" min="0" max="0" value="0" step="1" disabled>
+    </div>
+    <div class="legendRow">
+      <span class="chip"><span class="sw temp"></span>気温℃</span>
+      <span class="chip"><span class="sw hum"></span>湿度%</span>
+      <span class="chip"><span class="sw rain"></span>降水mm/h</span>
+      <span class="sep"></span>
+      <span class="wbgtLead">暑さ指数</span>
+      <span id="wbgtScale" class="wbgtScale"></span>
+    </div>
+    <div id="errorBox" class="error"></div>
+    <details class="adv">
+      <summary>暑さ指数の見方・取得状況</summary>
+      <div class="advBody">
+        <div class="wbgtNote">地図上の数値は各地点の暑さ指数WBGT（環境省・実況推定値／予測値）で、選択時刻に最も近い値を整数で表示します。<b>左（全国）＝各県庁所在地、右（地域）＝選択した県内の全公表地点</b>を、色と数値のみでオーバーレイします。数値の色は上のチップの区分に対応し、<b>35 を超える場合は黒地に白の太字（熱中症特別警戒）</b>で表示します。表示ON/OFFはツールバーの「暑さ指数」チェックです。</div>
+        <div id="debugBox" class="note"></div>
+      </div>
+    </details>
+  </section>
+
+  <section class="grid">
+    <div class="card">
+      <div class="cardHead"><h2>日本全土</h2><div class="status" id="jpStatus"></div></div>
+      <div id="mapJapan" class="map"></div>
+      <div class="chartWrap"><canvas id="chartJapan"></canvas></div>
+    </div>
+    <div class="card">
+      <div class="cardHead"><h2 id="regionTitle">香川県・高松</h2><div class="status" id="regStatus"></div></div>
+      <div id="mapRegion" class="map"></div>
+      <div class="chartWrap"><canvas id="chartRegion"></canvas></div>
+    </div>
+  </section>
+
+  <section class="card">
+    <div class="cardHead"><h2>3D雲頂強調画像</h2><div class="status" id="cloud3dHeadStatus">雲頂強調画像の色を高さに変換して立体表示します</div></div>
+    <div class="threeControls">
+      <label>3D対象：
+        <select id="cloud3dTarget">
+          <option value="region" selected>右側の地域地図</option>
+          <option value="japan">日本全体地図</option>
+        </select>
+      </label>
+      <label class="wideLabel">高さ倍率 <span id="cloud3dHeightScaleVal" class="value">55</span><input id="cloud3dHeightScale" type="range" min="5" max="160" step="1" value="55"></label>
+      <label class="wideLabel">解像度 <span id="cloud3dResolutionVal" class="value">96</span><input id="cloud3dResolution" type="range" min="48" max="180" step="4" value="96"></label>
+      <label><input id="cloud3dAutoToggle" type="checkbox" checked> 時刻に連動して自動作成</label>
+      <label><input id="cloud3dWireToggle" type="checkbox"> ワイヤー表示</label>
+      <label class="wideLabel">雲画像透明度 <span id="cloud3dOpacityVal" class="value">0.68</span><input id="cloud3dOpacity" type="range" min="0.15" max="1" step="0.01" value="0.68"></label>
+      <label class="wideLabel">地図透明度 <span id="cloud3dBaseOpacityVal" class="value">1.00</span><input id="cloud3dBaseOpacity" type="range" min="0" max="1" step="0.01" value="1.00"></label>
+      <button id="buildCloud3dBtn" type="button" class="smallBtn">現在時刻で3D作成</button>
+      <button id="resetCloud3dViewBtn" type="button" class="smallBtn">3D視点リセット</button>
+      <button id="exportStlBtn" type="button" class="smallBtn">STLで出力</button>
+    </div>
+    <div class="threeWrap"><div id="cloud3dCanvas"></div></div>
+    <div id="cloud3dStatus" class="threeStatus">「現在時刻で3D作成」を押すと、高さ0の地図面の上に、透過した雲頂強調画像を3Dメッシュとして重ねます。</div>
+  </section>
+
+</main>
+
+<script>
+// wbgtPoints は右側地図に色と数値を出す、その県内の公表アメダス地点番号（気温観測点）。
+// 香川県は全公表地点（高松・香南・滝宮・多度津・内海・引田・財田）。他地域は当面その代表点。
+const REGIONS = {
+  kagawa:{name:'香川県・高松', lat:34.3428, lon:134.0466, zoom:8, wbgtNo:72086, prefName:'香川県',
+          wbgtPoints:[72086,72126,72121,72111,72061,72146,72161]},
+  tokyo:{name:'東京都心', lat:35.6812, lon:139.7671, zoom:8, wbgtNo:44132, prefName:'東京都', wbgtPoints:[44132]},
+  osaka:{name:'大阪', lat:34.6937, lon:135.5023, zoom:8, wbgtNo:62078, prefName:'大阪府', wbgtPoints:[62078]},
+  koch:{name:'高知', lat:33.5597, lon:133.5311, zoom:8, wbgtNo:74182, prefName:'高知県', wbgtPoints:[74182]},
+  fukuoka:{name:'福岡', lat:33.5902, lon:130.4017, zoom:8, wbgtNo:82182, prefName:'福岡県', wbgtPoints:[82182]},
+  sapporo:{name:'札幌', lat:43.0618, lon:141.3545, zoom:8, wbgtNo:14163, prefName:'石狩地方', wbgtPoints:[14163]},
+  okinawa:{name:'那覇', lat:26.2124, lon:127.6792, zoom:8, wbgtNo:91197, prefName:'沖縄本島地方', wbgtPoints:[91197]}
+};
+const JAPAN_POINT = {name:'日本全土の代表点（東京）', lat:35.6812, lon:139.7671, wbgtNo:44132};
+
+// 全国の県庁所在地（気象官署）の地点番号。座標はアメダス地点表から実行時に解決します。
+const CAPITAL_POINTS = [
+  {no:14163,name:'札幌'},{no:31312,name:'青森'},{no:33431,name:'盛岡'},{no:34392,name:'仙台'},
+  {no:32402,name:'秋田'},{no:35426,name:'山形'},{no:36127,name:'福島'},{no:40201,name:'水戸'},
+  {no:41277,name:'宇都宮'},{no:42251,name:'前橋'},{no:43241,name:'さいたま'},{no:45148,name:'千葉'},
+  {no:44132,name:'東京'},{no:46106,name:'横浜'},{no:54232,name:'新潟'},{no:55102,name:'富山'},
+  {no:56227,name:'金沢'},{no:57066,name:'福井'},{no:49142,name:'甲府'},{no:48156,name:'長野'},
+  {no:52586,name:'岐阜'},{no:50331,name:'静岡'},{no:51106,name:'名古屋'},{no:53133,name:'津'},
+  {no:60131,name:'大津'},{no:61286,name:'京都'},{no:62078,name:'大阪'},{no:63518,name:'神戸'},
+  {no:64036,name:'奈良'},{no:65042,name:'和歌山'},{no:69122,name:'鳥取'},{no:68132,name:'松江'},
+  {no:66408,name:'岡山'},{no:67437,name:'広島'},{no:81286,name:'山口'},{no:71106,name:'徳島'},
+  {no:72086,name:'高松'},{no:73166,name:'松山'},{no:74182,name:'高知'},{no:82182,name:'福岡'},
+  {no:85142,name:'佐賀'},{no:84496,name:'長崎'},{no:86141,name:'熊本'},{no:83216,name:'大分'},
+  {no:87376,name:'宮崎'},{no:88317,name:'鹿児島'},{no:91197,name:'那覇'}
+];
+
+// 環境省 熱中症予防情報サイト 暑さ指数(WBGT) API。実況推定値＋予測値を取得します。
+// 仕様: https://www.wbgt.env.go.jp/wbgt_data_download.php
+const WBGT_API = 'https://www.wbgt.env.go.jp/api/v1';
+// アメダス地点表（地点番号→緯度経度）。座標解決に使用します。
+const AMEDAS_TABLE_URL = 'https://www.jma.go.jp/bosai/amedas/const/amedastable.json';
+// 暑さ指数の区分（環境省の指針。数値は「以上〜未満」）と、地図に載せる数値の色。
+// ※35を超える場合は利用者要望により黒の太字で表示し「熱中症特別警戒」と注記します。
+const WBGT_LEVELS = [
+  {min:-Infinity, max:21,       label:'ほぼ安全',       action:'適時水分補給',           cell:'#2b8cff', text:'#1667d6', bold:false},
+  {min:21,        max:25,       label:'注意',           action:'積極的に水分補給',       cell:'#9fd3f7', text:'#2f97d8', bold:false},
+  {min:25,        max:28,       label:'警戒',           action:'積極的に休息',           cell:'#fff200', text:'#c9a300', bold:true},
+  {min:28,        max:31,       label:'厳重警戒',       action:'激しい運動は中止',       cell:'#ff9a00', text:'#f07c00', bold:true},
+  {min:31,        max:35,       label:'危険',           action:'運動は原則中止',         cell:'#ff2a00', text:'#e01500', bold:true},
+  {min:35,        max:Infinity, label:'熱中症特別警戒', action:'外出はできるだけ避ける', cell:'#111111', text:'#000000', bold:true}
+];
+function wbgtLevel(v){
+  if(v == null || isNaN(v)) return null;
+  // 「35を超える」= 35より大きい場合のみ特別警戒。ちょうど35は危険（31以上35以下）に含めます。
+  if(v > 35) return WBGT_LEVELS[5]; // 熱中症特別警戒
+  if(v >= 31) return WBGT_LEVELS[4]; // 危険
+  if(v >= 28) return WBGT_LEVELS[3]; // 厳重警戒
+  if(v >= 25) return WBGT_LEVELS[2]; // 警戒
+  if(v >= 21) return WBGT_LEVELS[1]; // 注意
+  return WBGT_LEVELS[0];             // ほぼ安全
+}
+const JMA = 'https://www.jma.go.jp';
+const WXMAP_BASE = `${JMA}/bosai/weather_map/data/png/`;
+const NOWC_TILE_TEMPLATE = `${JMA}/bosai/jmatile/data/nowc/{base}/none/{valid}/surf/{element}/{z}/{x}/{y}.png`;
+
+const HIMAWARI_TILE_TEMPLATE = `${JMA}/bosai/himawari/data/satimg/{base}/jp/{valid}/{band}/{prod}/{z}/{x}/{y}.jpg`;
+const HIMAWARI_PRODUCTS = {
+  visible:{label:'ひまわり可視', band:'B03', prod:'ALBD', pane:'himawariVisPane', zIndex:420},
+  cloudTop:{label:'ひまわり雲頂強調', band:'SND', prod:'ETC', pane:'himawariCloudPane', zIndex:430}
+};
+
+let mapJapan, mapRegion, charts = {}, rainLayers = [], wxLayers = [], himawariLayers = [], obsLayers = [], nowcTimes = [], wxMaps = [], himawariTimes = [], timeRows = [];
+let selectedIndex = 0;
+let wbgtLayers = [];                       // 地図上のWBGT数値ラベル
+let wbgtGroups = {national:null, pref:null}; // Map: 地点番号 -> {date,wbgt} 時系列
+let wbgtStatus = {national:'', pref:''};   // 取得状況メッセージ
+let amedasTable = null;                    // 地点番号 -> {lat, lon, name}
+let cloud3d = {renderer:null, scene:null, camera:null, controls:null, mesh:null, texture:null, baseMesh:null, baseTexture:null, lastCanvas:null, lastBaseCanvas:null, lastMosaic:null, lastSat:null, animationId:null};
+
+function fmtTime(d){ return new Intl.DateTimeFormat('ja-JP',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).format(d); }
+function parseJmaUTC(s){ return new Date(Date.UTC(+s.slice(0,4), +s.slice(4,6)-1, +s.slice(6,8), +s.slice(8,10), +s.slice(10,12), +s.slice(12,14))); }
+function ymdLocal(d){ const z=n=>String(n).padStart(2,'0'); return `${d.getFullYear()}${z(d.getMonth()+1)}${z(d.getDate())}`; }
+function closestByTime(list, t){ if(!list.length) return null; return list.reduce((a,b)=> Math.abs(b.date-t) < Math.abs(a.date-t) ? b : a, list[0]); }
+
+function initMaps(){
+  const base = 'https://cyberjapandata.gsi.go.jp/xyz/pale/{z}/{x}/{y}.png';
+  // zoomSnap:0 で小数ズームを許可し、天気図の横幅をウインドウ幅にぴったり合わせられるようにします。
+  mapJapan = L.map('mapJapan', {zoomControl:true, zoomSnap:0, zoomDelta:0.5}).setView([37.5, 137.5], 4);
+  mapRegion = L.map('mapRegion', {zoomControl:true}).setView([REGIONS.kagawa.lat, REGIONS.kagawa.lon], REGIONS.kagawa.zoom);
+  [mapJapan, mapRegion].forEach(m => {
+    m.createPane('himawariVisPane'); m.getPane('himawariVisPane').style.zIndex = 420; m.getPane('himawariVisPane').classList.add('himawari-vis-pane');
+    m.createPane('himawariCloudPane'); m.getPane('himawariCloudPane').style.zIndex = 430; m.getPane('himawariCloudPane').classList.add('himawari-cloud-pane');
+    m.createPane('wxPane'); m.getPane('wxPane').style.zIndex = 450; m.getPane('wxPane').classList.add('wx-pane');
+    m.createPane('rainNDPane'); m.getPane('rainNDPane').style.zIndex = 740; m.getPane('rainNDPane').classList.add('rain-nd-pane');
+    m.createPane('rainPane'); m.getPane('rainPane').style.zIndex = 780; m.getPane('rainPane').classList.add('rain-pane-strong');
+    m.createPane('japanBasePane'); m.getPane('japanBasePane').style.zIndex = 350;
+    m.createPane('obsPane'); m.getPane('obsPane').style.zIndex = 900;
+  });
+  // 右側（地域）は通常の地理院タイル。左側（日本全土）は天気図の図法に再投影した背景を使います。
+  L.tileLayer(base, {maxZoom:18, attribution:'地理院タイル'}).addTo(mapRegion);
+  mapJapan.attributionControl.addAttribution('地理院タイル, 気象庁');
+  rebuildJapanBase();
+}
+
+async function fetchJson(url){
+  const r = await fetch(url, {cache:'no-store'});
+  if(!r.ok) throw new Error(`${r.status} ${r.statusText}: ${url}`);
+  return await r.json();
+}
+
+async function loadNowcTimes(){
+  const [past, future] = await Promise.all([
+    fetchJson(`${JMA}/bosai/jmatile/data/nowc/targetTimes_N1.json`),
+    fetchJson(`${JMA}/bosai/jmatile/data/nowc/targetTimes_N2.json`)
+  ]);
+  const merged = [...past, ...future]
+    .filter(x => x.elements?.includes('hrpns'))
+    .map(x => ({base:x.basetime, valid:x.validtime, date:parseJmaUTC(x.validtime)}))
+    .sort((a,b)=>a.date-b.date);
+  const uniq = new Map(merged.map(x => [`${x.base}_${x.valid}`, x]));
+  nowcTimes = [...uniq.values()];
+  console.log('nowc times', nowcTimes.length, nowcTimes[0], nowcTimes[nowcTimes.length-1]);
+}
+
+async function loadWeatherMaps(){
+  const list = await fetchJson(`${JMA}/bosai/weather_map/data/list.json`);
+  const near = list.near || list;
+  const files = [
+    ...(near.now || []),
+    ...(near.ft24 || []),
+    ...(near.ft48 || [])
+  ].filter(Boolean);
+  wxMaps = files.map(fn => {
+    fn = Array.isArray(fn) ? fn[0] : fn;
+    const m = String(fn).match(/_(\d{14})_MET/) || String(fn).match(/_(\d{14})_/);
+    return {file:fn, date:m ? parseJmaUTC(m[1]) : new Date(0), url: WXMAP_BASE + fn};
+  }).sort((a,b)=>a.date-b.date);
+  console.log('weather maps', wxMaps.length, wxMaps[0], wxMaps[wxMaps.length-1]);
+}
+
+
+async function loadHimawariTimes(){
+  const list = await fetchJson(`${JMA}/bosai/himawari/data/satimg/targetTimes_jp.json`);
+  himawariTimes = list
+    .map(x => ({base:x.basetime, valid:x.validtime, date:parseJmaUTC(x.validtime)}))
+    .sort((a,b)=>a.date-b.date);
+  console.log('himawari times', himawariTimes.length, himawariTimes[0], himawariTimes[himawariTimes.length-1]);
+}
+
+async function loadWeatherSeries(place){
+  // Open-Meteo の JMA MSM/GSM ベースAPI。1日前〜明日までを時間単位で取得。
+  const url = new URL('https://api.open-meteo.com/v1/jma');
+  url.search = new URLSearchParams({
+    latitude:place.lat, longitude:place.lon, timezone:'Asia/Tokyo', past_days:'1', forecast_days:'2',
+    hourly:'temperature_2m,relative_humidity_2m,precipitation'
+  }).toString();
+  const j = await fetchJson(url.toString());
+  return j.hourly.time.map((t,i)=>({
+    time:t, date:new Date(t), temp:j.hourly.temperature_2m[i], hum:j.hourly.relative_humidity_2m[i], rain:j.hourly.precipitation[i]
+  }));
+}
+
+// ===== 暑さ指数(WBGT) =====
+function fmtApiTime(d){ const z=n=>String(n).padStart(2,'0'); return `${d.getFullYear()}${z(d.getMonth()+1)}${z(d.getDate())}${z(d.getHours())}${z(d.getMinutes())}${z(d.getSeconds())}`; }
+function parseApiTime(s){ return new Date(String(s).replace(/\//g,'-').replace(' ','T')); } // "YYYY/MM/DD HH:MM:SS"(JST)
+
+// 環境省APIは成功(200)時はCORSを許可しますが、無効な地点番号などでは400（CORSヘッダ無し）になります。
+// まず直接取得を試み、失敗したら複数のCORSプロキシ経由で再試行します（file://で開いた場合の保険）。
+async function fetchWbgtJson(apiUrl){
+  try{
+    const r = await fetch(apiUrl, {cache:'no-store'});
+    if(r.ok){ const j = await r.json(); if(j && j.status === 'success') return j; if(j && j.status === 'error') throw new Error(j.errMsg||'WBGT error'); }
+  }catch(e){ /* CORS/ネットワーク。プロキシにフォールバック */ }
+  const proxies = [
+    u => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(u),
+    u => 'https://api.codetabs.com/v1/proxy/?quest=' + encodeURIComponent(u)
+  ];
+  for(const mk of proxies){
+    try{
+      const r2 = await fetch(mk(apiUrl), {cache:'no-store'});
+      if(!r2.ok) continue;
+      const j2 = await r2.json();
+      if(j2 && j2.status === 'success') return j2;
+    }catch(e){ /* 次のプロキシへ */ }
+  }
+  throw new Error('WBGT取得失敗');
+}
+
+// アメダス地点表を取得して {地点番号: {lat, lon, name}} を作ります（緯度経度は[度,分]→10進変換）。
+async function ensureAmedasTable(){
+  if(amedasTable) return amedasTable;
+  const raw = await fetchJson(AMEDAS_TABLE_URL);
+  const t = {};
+  for(const [no, v] of Object.entries(raw)){
+    if(!v || !v.lat || !v.lon) continue;
+    t[no] = {lat: v.lat[0] + v.lat[1]/60, lon: v.lon[0] + v.lon[1]/60, name: v.kjName || no};
+  }
+  amedasTable = t;
+  return amedasTable;
+}
+function amedasCoord(no){ return amedasTable ? amedasTable[String(no)] : null; }
+
+// 複数地点の「実況推定値（過去1日）＋予測値（最新発表分）」を1回のリクエストで取得し、
+// 地点番号ごとの時系列 Map(no -> [{date,wbgt}]) を返します。nos は地点番号の配列。
+async function fetchWbgtSeriesForNos(nos){
+  const now = new Date();
+  const past = fmtApiTime(new Date(now.getTime() - 24*3600*1000));
+  const nowS = fmtApiTime(now);
+  // 予測は「発表時刻」で検索するため、範囲の終端は現在時刻まで（未来にすると400になります）。
+  const foreFrom = fmtApiTime(new Date(now.getTime() - 24*3600*1000));
+  const q = nos.map(n => `wbgt_nos=${n}`).join('&');
+  const survUrl = `${WBGT_API}/getSurveyData?data_type=0&location_type=1&${q}&date_from=${past}&date_to=${nowS}`;
+  const foreUrl = `${WBGT_API}/getForecastData?location_type=1&${q}&date_search_type=1&range_date_from=${foreFrom}&range_date_to=${nowS}`;
+
+  const perPoint = new Map(); // no -> Map(timeMs -> wbgt)
+  const getMap = no => { const k=String(no); if(!perPoint.has(k)) perPoint.set(k, new Map()); return perPoint.get(k); };
+
+  const [surv, fore] = await Promise.allSettled([fetchWbgtJson(survUrl), fetchWbgtJson(foreUrl)]);
+
+  if(surv.status === 'fulfilled'){
+    (surv.value.data || []).forEach(d => {
+      const v = parseFloat(d.wbgt_WO);           // 実況推定値は実数値（例 "28.5"）
+      const t = parseApiTime(d.wbgt_date).getTime();
+      if(!isNaN(v) && !isNaN(t)) getMap(d.wbgt_no).set(t, v);
+    });
+  }
+  if(fore.status === 'fulfilled'){
+    // 予測時刻ごとに最新の発表時刻の値を採用。過去は実況を優先し上書きしません。
+    const latest = new Map(); // `${no}_${ft}` -> {ref, val, no, ft}
+    (fore.value.data || []).forEach(d => {
+      const ft = parseApiTime(d.forecast_time).getTime();
+      const ref = parseApiTime(d.reference_time).getTime();
+      const val = parseFloat(d.forecast_val) / 10; // 予測値は10倍表現（例 "286"→28.6）
+      if(isNaN(ft) || isNaN(val)) return;
+      const key = `${d.wbgt_no}_${ft}`;
+      const prev = latest.get(key);
+      if(!prev || ref >= prev.ref) latest.set(key, {ref, val, no:d.wbgt_no, ft});
+    });
+    latest.forEach(o => { const m = getMap(o.no); if(!m.has(o.ft)) m.set(o.ft, o.val); });
+  }
+
+  const out = new Map();
+  perPoint.forEach((m, no) => {
+    const series = [...m.entries()].map(([t,wbgt]) => ({date:new Date(t), wbgt})).sort((a,b)=>a.date-b.date);
+    if(series.length) out.set(no, series);
+  });
+  if(!out.size) throw new Error('WBGTデータが空です');
+  return out;
+}
+
+// バッチ取得を試み、失敗（無効な地点番号が混ざると400になる等）した場合は
+// 地点ごとに個別取得して、取得できた地点だけを集約します。
+async function loadWbgtGroup(nos){
+  try{
+    return await fetchWbgtSeriesForNos(nos);
+  }catch(e){
+    const results = await Promise.allSettled(nos.map(n => fetchWbgtSeriesForNos([n])));
+    const out = new Map();
+    results.forEach(r => { if(r.status === 'fulfilled') r.value.forEach((s, no) => out.set(no, s)); });
+    if(!out.size) throw e;
+    return out;
+  }
+}
+
+async function reloadWbgt(){
+  if(!document.getElementById('wbgtToggle').checked){ updateWbgtOverlay(); return; }
+  const reg = REGIONS[document.getElementById('regionSelect').value];
+  try{ await ensureAmedasTable(); }catch(e){ /* 座標表が無くても後続はtryする */ }
+  const jobs = [
+    loadWbgtGroup(CAPITAL_POINTS.map(p=>p.no))
+      .then(g=>{wbgtGroups.national=g; wbgtStatus.national='';})
+      .catch(e=>{wbgtGroups.national=null; wbgtStatus.national=e.message;}),
+    loadWbgtGroup(reg.wbgtPoints || [reg.wbgtNo])
+      .then(g=>{wbgtGroups.pref=g; wbgtStatus.pref='';})
+      .catch(e=>{wbgtGroups.pref=null; wbgtStatus.pref=e.message;})
+  ];
+  await Promise.allSettled(jobs);
+  updateWbgtOverlay();
+  updateDebugLine();
+}
+
+// 色と数値のみのコンパクトなラベル（多地点表示用）。小数は表示しません（四捨五入）。
+// tiny=true で全国用の小さめ文字。35超は黒地に白の太字。色は表示する整数値で判定します。
+function makeWbgtNumIcon(value, tiny){
+  const iv = Math.round(value);          // 小数不要 → 整数表示
+  const L0 = wbgtLevel(iv);
+  if(!L0) return null;
+  const weight = L0.bold ? '900' : '700';
+  const special = iv > 35 ? ' wbgt-dot-special' : '';
+  const size = tiny ? ' tiny' : '';
+  const html = `<span class="wbgt-dot${special}${size}" style="color:${L0.text};font-weight:${weight}">${iv}</span>`;
+  const anchor = tiny ? [9, 6] : [12, 8];
+  return L.divIcon({className:'wbgt-mini', html, iconSize:null, iconAnchor:anchor});
+}
+
+function renderWbgtGroup(map, groupMap, tiny){
+  if(!groupMap) return 0;
+  const t = timeRows.length ? timeRows[selectedIndex].date : new Date();
+  let n = 0;
+  groupMap.forEach((series, no) => {
+    const c = amedasCoord(no);
+    if(!c) return; // 座標不明の地点はスキップ
+    const nearest = closestByTime(series, t);
+    if(!nearest) return;
+    const icon = makeWbgtNumIcon(nearest.wbgt, tiny);
+    if(!icon) return;
+    const marker = L.marker(placeOnMap(map, c.lat, c.lon), {icon, pane:'obsPane', interactive:false}).addTo(map);
+    wbgtLayers.push(marker);
+    n++;
+  });
+  return n;
+}
+
+function updateWbgtOverlay(){
+  clearLayerArray(wbgtLayers);
+  const on = document.getElementById('wbgtToggle');
+  if(on && !on.checked) return;
+  renderWbgtGroup(mapJapan, wbgtGroups.national, true); // 全国は小さめ文字（重なり軽減）
+  renderWbgtGroup(mapRegion, wbgtGroups.pref, false);
+}
+
+function renderWbgtLegend(){
+  const box = document.getElementById('wbgtScale');
+  if(!box) return;
+  // 1行に収まるチップ表示。詳しい対処法（適時水分補給など）はマウスオーバーで表示します。
+  const ranges = ['21未満','21〜25','25〜28','28〜31','31〜35','35超'];
+  const full = ['21未満','21以上25未満','25以上28未満','28以上31未満','31以上35以下','35を超える'];
+  // 明るい背景色（水色・黄）は文字を黒、それ以外は白にして視認性を確保します。
+  const darkText = new Set(['#9fd3f7','#fff200']);
+  box.innerHTML = WBGT_LEVELS.map((L,i) => {
+    const c = darkText.has(L.cell.toLowerCase()) ? '#1f2937' : '#ffffff';
+    return `<span class="wchip" style="background:${L.cell};color:${c}" title="${full[i]}：${L.action}">${L.label} ${ranges[i]}</span>`;
+  }).join('');
+}
+
+function buildChart(canvasId, rows, title){
+  const ctx = document.getElementById(canvasId);
+  if(charts[canvasId]) charts[canvasId].destroy();
+  const markerPlugin = {
+    id:'selectedTimeMarker',
+    afterDatasetsDraw(chart){
+      const meta = chart.getDatasetMeta(0); if(!meta.data[selectedIndex]) return;
+      const x = meta.data[selectedIndex].x; const {top,bottom} = chart.chartArea;
+      const c = chart.ctx; c.save(); c.setLineDash([5,4]); c.strokeStyle = '#111827'; c.lineWidth = 1.3;
+      c.beginPath(); c.moveTo(x, top); c.lineTo(x, bottom); c.stroke(); c.restore();
+    }
+  };
+  charts[canvasId] = new Chart(ctx, {
+    type:'line',
+    data:{ labels:rows.map(r=>fmtTime(r.date)), datasets:[
+      {label:'気温 ℃', data:rows.map(r=>r.temp), yAxisID:'yTemp', borderColor:'#ef4444', backgroundColor:'#ef444433', tension:.25, pointRadius:0, borderWidth:2},
+      {label:'湿度 %', data:rows.map(r=>r.hum), yAxisID:'yHum', borderColor:'#2563eb', backgroundColor:'#2563eb22', tension:.25, pointRadius:0, borderWidth:2},
+      {label:'降水量 mm/h', data:rows.map(r=>r.rain), yAxisID:'yRain', borderColor:'#0ea5e9', backgroundColor:'#0ea5e944', type:'bar', borderWidth:0}
+    ]},
+    options:{maintainAspectRatio:false, interaction:{mode:'index',intersect:false}, plugins:{legend:{position:'bottom'}, title:{display:true,text:title}},
+      scales:{x:{ticks:{maxTicksLimit:9}}, yTemp:{position:'left', title:{display:true,text:'℃'}}, yHum:{position:'right', min:0, max:100, grid:{drawOnChartArea:false}, title:{display:true,text:'%'}}, yRain:{position:'right', grid:{drawOnChartArea:false}, title:{display:true,text:'mm/h'}, suggestedMin:0}}
+    }, plugins:[markerPlugin]
+  });
+}
+
+function clearLayerArray(arr){ arr.forEach(l => { try{l.remove();}catch(e){} }); arr.length = 0; }
+let radarTileStats = {loaded:0, error:0};
+
+function updateRainPaneStyle(){
+  [mapJapan, mapRegion].forEach(m => {
+    const p = m.getPane('rainPane');
+    if(!p) return;
+    p.classList.toggle('rain-pane-strong', document.getElementById('rainEnhance').checked);
+  });
+}
+
+// ===== 気象庁天気図の配置（画像は一切加工せず、本来の縦横比のまま貼る） =====
+// 天気図を「基準」とし、画像をリサンプルしたり縦横を別倍率で伸ばしたりはしません。
+// 画像本来のアスペクト比を保ったまま地図上に置き、位置と大きさだけを調整して
+// 日本の形が地図タイル側と重なるように合わせます。
+const WX_PLACE = {
+  centerLat: 31.5,   // 倍率1.0のときの中心
+  centerLon: 136.1,
+  halfLon: 32.14     // 倍率1.0のときの東西の半幅（度）
+};
+let wxImageAspect = 0.84;      // 画像の 高さ/幅（実画像から判明したら更新）
+let wxAspectKnown = false;
+const wxAspectCache = new Map();
+
+function mercY(latDeg){ return Math.log(Math.tan(Math.PI/4 + latDeg*Math.PI/360)); }
+function invMercY(y){ return (2*Math.atan(Math.exp(y)) - Math.PI/2) * 180/Math.PI; }
+
+function getWxTuning(){
+  const g = (id, def) => { const el = document.getElementById(id); const v = el ? +el.value : NaN; return isNaN(v) ? def : v; };
+  return {scale: g('wxScale', 1.0), shiftX: g('wxShiftX', 0), shiftY: g('wxShiftY', 0)};
+}
+
+// 画像を歪めないための肝：東西の幅を決めたら、南北の幅は
+// 「メルカトル平面上で画像のアスペクト比と同じになる」ように計算します。
+function getWeatherMapBounds(){
+  const t = getWxTuning();
+  const halfLon = WX_PLACE.halfLon / t.scale;
+  const cLon = WX_PLACE.centerLon + t.shiftX;
+  const cLat = WX_PLACE.centerLat + t.shiftY;
+  const lonW = cLon - halfLon, lonE = cLon + halfLon;
+  // メルカトルではx∝経度なので、x方向の広がり（ラジアン）から必要なy方向の広がりを出します。
+  const xSpan = (lonE - lonW) * Math.PI/180;
+  const ySpan = xSpan * wxImageAspect;          // ← これで画像は無歪み
+  const yC = mercY(cLat);
+  const latN = invMercY(yC + ySpan/2);
+  const latS = invMercY(yC - ySpan/2);
+  return [[latS, lonW], [latN, lonE]];
+}
+
+// 画像の縦横比を調べます（寸法を読むだけなのでCORSの制約を受けません）。
+function ensureWxAspect(url){
+  if(wxAspectCache.has(url)) return wxAspectCache.get(url);
+  const p = new Promise(resolve => {
+    const img = new Image();
+    img.onload = () => {
+      const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+      if(w && h){
+        const a = h / w;
+        const changed = !wxAspectKnown || Math.abs(a - wxImageAspect) > 1e-6;
+        wxImageAspect = a; wxAspectKnown = true;
+        resolve(changed);
+      }else resolve(false);
+    };
+    img.onerror = () => resolve(false);
+    img.src = url;
+  });
+  wxAspectCache.set(url, p);
+  return p;
+}
+
+// ===== 地図側データを天気図の図法（極心平射）へ再投影する =====
+// 天気図の画像内での「北極の位置(cu,cv)」と「倍率(scale)」。画像の幅=1 の等方単位。
+const WX_GEO = {lon0:140, latTs:60, cu:0.556682, cv:-0.413567, scale:0.854609};
+// 再投影に使う元データの地理範囲（この範囲のタイルを集めて変換します）
+const CHART_GEO_BBOX = {latS:0, latN:70, lonW:95, lonE:180};
+const WARP_OUT_W = 1100;
+
+function wxGeoTuned(){
+  const t = getWxTuning();
+  return {lon0:WX_GEO.lon0, latTs:WX_GEO.latTs,
+          cu:WX_GEO.cu + t.shiftX, cv:WX_GEO.cv + t.shiftY, scale:WX_GEO.scale * t.scale};
+}
+// 緯度経度 → 天気図画像内の位置（u:幅の比, v:高さの比）
+function wxProjectToImage(lat, lon, g, aspect){
+  const k = 1 + Math.sin(g.latTs*Math.PI/180);
+  const rho = k * Math.tan(Math.PI/4 - lat*Math.PI/360);
+  const d = (lon - g.lon0) * Math.PI/180;
+  return {u: g.cu + g.scale*rho*Math.sin(d), v: (g.cv + g.scale*rho*Math.cos(d))/aspect};
+}
+// 天気図画像内の位置 → 緯度経度（上の逆変換）
+function wxUnprojectFromImage(u, v, g, aspect){
+  const k = 1 + Math.sin(g.latTs*Math.PI/180);
+  const X = (u - g.cu)/g.scale, Y = (v*aspect - g.cv)/g.scale;
+  const rho = Math.sqrt(X*X + Y*Y);
+  let lon = g.lon0 + Math.atan2(X, Y)*180/Math.PI;
+  if(lon > 180) lon -= 360; else if(lon < -180) lon += 360;
+  return {lat: 90 - 2*Math.atan(rho/k)*180/Math.PI, lon};
+}
+// 画像内の位置 → 画面上の緯度経度（天気図を貼っている矩形に線形対応）
+function wxImageFracToLatLng(u, v){
+  const bb = getWeatherMapBounds();
+  const latS = bb[0][0], lonW = bb[0][1], latN = bb[1][0], lonE = bb[1][1];
+  const yN = mercY(latN), yS = mercY(latS);
+  return [invMercY(yN - v*(yN - yS)), lonW + u*(lonE - lonW)];
+}
+// 実際の緯度経度 → 日本全土地図（天気図座標系）での表示位置
+function wxGeoToDisplay(lat, lon){
+  const p = wxProjectToImage(lat, lon, wxGeoTuned(), wxImageAspect);
+  return wxImageFracToLatLng(p.u, p.v);
+}
+// 日本全土地図はマーカーも天気図座標へ寄せます（右側の地域地図は通常座標のまま）
+function placeOnMap(map, lat, lon){
+  return (map === mapJapan) ? wxGeoToDisplay(lat, lon) : [lat, lon];
+}
+// 日本全土地図は天気図座標系なので、表示範囲を「実際の緯度経度」に戻して返します。
+function mapGeoBounds(map){
+  const b = map.getBounds();
+  if(map !== mapJapan) return b;
+  const bb = getWeatherMapBounds();
+  const latS = bb[0][0], lonW = bb[0][1], latN = bb[1][0], lonE = bb[1][1];
+  const yN = mercY(latN), yS = mercY(latS), g = wxGeoTuned();
+  let sLat = 90, nLat = -90, wLon = 180, eLon = -180, n = 0;
+  const N = 10;
+  for(let i=0; i<=N; i++) for(let j=0; j<=N; j++){
+    const lat = b.getSouth() + (b.getNorth()-b.getSouth())*j/N;
+    const lon = b.getWest() + (b.getEast()-b.getWest())*i/N;
+    const p = wxUnprojectFromImage((lon-lonW)/(lonE-lonW), (yN-mercY(lat))/(yN-yS), g, wxImageAspect);
+    if(!isFinite(p.lat) || !isFinite(p.lon) || p.lat < -85 || p.lat > 85) continue;
+    sLat = Math.min(sLat, p.lat); nLat = Math.max(nLat, p.lat);
+    wLon = Math.min(wLon, p.lon); eLon = Math.max(eLon, p.lon); n++;
+  }
+  return n ? L.latLngBounds([sLat, wLon], [nLat, eLon]) : b;
+}
+
+// メルカトルのXYZタイルを集めて1枚のキャンバスにします（並列取得）。
+async function buildMercatorMosaic(tileUrl, z, bbox, maxTiles){
+  const nw = lonLatToTileXY(bbox.lonW, bbox.latN, z);
+  const se = lonLatToTileXY(bbox.lonE, bbox.latS, z);
+  let minX = Math.min(nw.x, se.x), maxX = Math.max(nw.x, se.x);
+  let minY = Math.min(nw.y, se.y), maxY = Math.max(nw.y, se.y);
+  ({minX, maxX, minY, maxY} = limitTileRange(minX, maxX, minY, maxY, maxTiles || 64));
+  const T = 256, W = (maxX-minX+1)*T, H = (maxY-minY+1)*T;
+  const c = document.createElement('canvas'); c.width = W; c.height = H;
+  const ctx = c.getContext('2d', {willReadFrequently:true});
+  const jobs = [];
+  for(let y=minY; y<=maxY; y++) for(let x=minX; x<=maxX; x++){
+    jobs.push(loadImageForCanvas(tileUrl(z, x, y))
+      .then(img => { ctx.drawImage(img, (x-minX)*T, (y-minY)*T, T, T); return 1; })
+      .catch(() => 0));
+  }
+  const res = await Promise.all(jobs);
+  const ok = res.reduce((a,b)=>a+b, 0);
+  return {ctx, minX, minY, W, H, z, ok, fail: res.length - ok};
+}
+
+// 集めたメルカトル画像を、天気図の図法に合わせて描き直します。
+function warpMosaicToChart(mos, outW){
+  const aspect = wxImageAspect;
+  const outH = Math.max(1, Math.round(outW * aspect));
+  const g = wxGeoTuned();
+  const k = 1 + Math.sin(g.latTs*Math.PI/180);
+  const src = mos.ctx.getImageData(0, 0, mos.W, mos.H).data;
+  const out = document.createElement('canvas'); out.width = outW; out.height = outH;
+  const octx = out.getContext('2d');
+  const od = octx.createImageData(outW, outH), o = od.data;
+  const scaleG = Math.pow(2, mos.z) * 256;
+  const left = mos.minX*256, top = mos.minY*256;
+  for(let py=0; py<outH; py++){
+    const Y = (((py+0.5)/outH)*aspect - g.cv)/g.scale;
+    const rowOff = py*outW*4;
+    for(let px=0; px<outW; px++){
+      const X = ((px+0.5)/outW - g.cu)/g.scale;
+      const rho = Math.sqrt(X*X + Y*Y);
+      const lat = 90 - 2*Math.atan(rho/k)*180/Math.PI;
+      if(lat < -84 || lat > 84) continue;
+      let lon = g.lon0 + Math.atan2(X, Y)*180/Math.PI;
+      if(lon > 180) lon -= 360; else if(lon < -180) lon += 360;
+      const gx = (lon+180)/360*scaleG - left;
+      if(gx < 0 || gx >= mos.W) continue;
+      const lr = lat*Math.PI/180;
+      const gy = (1 - Math.log(Math.tan(lr) + 1/Math.cos(lr))/Math.PI)/2*scaleG - top;
+      if(gy < 0 || gy >= mos.H) continue;
+      const si = (((gy|0)*mos.W) + (gx|0))*4, oi = rowOff + px*4;
+      o[oi]=src[si]; o[oi+1]=src[si+1]; o[oi+2]=src[si+2]; o[oi+3]=src[si+3];
+    }
+  }
+  octx.putImageData(od, 0, 0);
+  return out;
+}
+
+const warpCache = new Map();
+const warpInflight = new Map();
+function warpKey(name, extra){
+  const t = getWxTuning();
+  return `${name}|${extra}|${t.scale}|${t.shiftX}|${t.shiftY}|${wxImageAspect.toFixed(4)}`;
+}
+// 再投影した画像を天気図と同じ矩形に重ねます。
+async function addWarpedOverlay(map, opt){
+  const layer = L.imageOverlay('', getWeatherMapBounds(), {
+    opacity:opt.opacity, interactive:false, zIndex:opt.zIndex, pane:opt.pane
+  }).addTo(map);
+  opt.store.push(layer);
+  try{
+    const key = warpKey(opt.name, opt.extra);
+    let url = warpCache.get(key);
+    if(!url){
+      // 同じ内容の変換が同時に走らないようにまとめます
+      let job = warpInflight.get(key);
+      if(!job){
+        job = (async () => {
+          const mos = await buildMercatorMosaic(opt.tileUrl, opt.z, CHART_GEO_BBOX, 64);
+          if(!mos.ok) throw new Error('タイルを取得できませんでした');
+          const u = warpMosaicToChart(mos, WARP_OUT_W).toDataURL('image/png');
+          if(warpCache.size > 10) warpCache.clear();
+          warpCache.set(key, u);
+          return u;
+        })();
+        warpInflight.set(key, job);
+        job.catch(()=>{}).then(() => warpInflight.delete(key));
+      }
+      url = await job;
+    }
+    if(opt.store.includes(layer)) layer.setUrl(url);
+  }catch(e){
+    console.warn('再投影に失敗:', opt.name, e);
+  }
+  return layer;
+}
+
+// 日本全土の背景地図（地理院タイルを再投影したもの）
+let japanBaseLayers = [];
+function rebuildJapanBase(){
+  clearLayerArray(japanBaseLayers);
+  if(!mapJapan) return;
+  addWarpedOverlay(mapJapan, {
+    name:'gsi', extra:'pale', z:5, pane:'japanBasePane', zIndex:350, opacity:1,
+    store:japanBaseLayers,
+    tileUrl:(z,x,y) => `https://cyberjapandata.gsi.go.jp/xyz/pale/${z}/${x}/${y}.png`
+  });
+}
+
+function updateTuneValueLabels(){
+  const fmt = {wxScale:3, wxShiftX:3, wxShiftY:3};
+  Object.keys(fmt).forEach(id => {
+    const el = document.getElementById(id);
+    const val = document.getElementById(id + 'Val');
+    if(el && val) val.textContent = (+el.value).toFixed(fmt[id]);
+  });
+}
+
+function resetWeatherMapTuning(){
+  document.getElementById('wxScale').value = 1.0;
+  document.getElementById('wxShiftX').value = 0;
+  document.getElementById('wxShiftY').value = 0;
+  updateTuneValueLabels();
+  rebuildJapanBase();
+  updateOverlays();
+  fitJapanToWeatherMap({force:true});
+}
+
+// 地図ボックスの縦横比を天気図画像の縦横比に合わせます。
+// これで「横幅＝天気図の幅」にしたとき、縦も天気図がちょうど収まります。
+// 右側（高松）の地図にも同じ比率を適用します。
+function applyMapAspect(){
+  const els = [document.getElementById('mapJapan'), document.getElementById('mapRegion')].filter(Boolean);
+  els.forEach(el => {
+    const w = el.clientWidth;
+    if(!w) return;
+    // 極端に縦長・縦短にならないよう安全域でクランプします。
+    const h = Math.max(240, Math.min(Math.round(w * wxImageAspect), Math.round(window.innerHeight * 0.92)));
+    el.style.height = h + 'px';
+  });
+  [mapJapan, mapRegion].forEach(m => { if(m) m.invalidateSize(false); });
+}
+
+// 日本全土の地図を天気図に合わせます。初期表示は「天気図の横幅＝ウインドウ幅」、
+// 縮小は「天気図全体が見える縮尺」までで止めます（それ以上は縮小不可）。
+let japanFitted = false;
+function fitJapanToWeatherMap(opts){
+  if(!mapJapan) return;
+  const bb = getWeatherMapBounds();
+  const b = L.latLngBounds(bb);
+  const lonSpan = bb[1][1] - bb[0][1];
+  const size = mapJapan.getSize();
+  if(!size.x || !size.y || !(lonSpan > 0)) return;
+  mapJapan.setMinZoom(-5); // 一旦解除してから必要なズームを求めます
+  // 天気図の横幅がちょうどウインドウ幅になるズーム（メルカトルではx∝経度）
+  const zWidth = Math.log2(size.x * 360 / (256 * lonSpan));
+  const zAll = mapJapan.getBoundsZoom(b, false); // 天気図全体が収まるズーム
+  const zMin = Math.min(zWidth, zAll);
+  if(!japanFitted || (opts && opts.force)){
+    mapJapan.setView(b.getCenter(), zWidth, {animate:false});
+    japanFitted = true;
+  }else if(mapJapan.getZoom() < zMin){
+    mapJapan.setZoom(zMin, {animate:false});
+  }
+  mapJapan.setMinZoom(zMin); // これ以上は縮小不可（拡大のみ）
+}
+
+function forceMapAndOverlayRefresh(){
+  const maps = [mapJapan, mapRegion].filter(Boolean);
+  const refresh = () => {
+    maps.forEach(m => m.invalidateSize(true));
+    rainLayers.forEach(l => { try{ l.redraw(); }catch(e){} });
+    himawariLayers.forEach(l => { try{ l.redraw(); }catch(e){} });
+  };
+  refresh();
+  setTimeout(refresh, 80);
+  setTimeout(refresh, 300);
+  setTimeout(refresh, 900);
+}
+
+function makeNowcTileUrl(time, element){
+  return NOWC_TILE_TEMPLATE
+    .replace('{base}', time.base)
+    .replace('{valid}', time.valid)
+    .replace('{element}', element);
+}
+
+function addOneRadarLayer(map, time, element, paneName, opacity, zIndex){
+  const url = makeNowcTileUrl(time, element);
+  if(map === mapJapan){
+    // 日本全土は天気図の図法に再投影して重ねます
+    addWarpedOverlay(map, {
+      name:'radar', extra:`${element}|${time.base}|${time.valid}`, z:5,
+      pane:paneName, zIndex, opacity, store:rainLayers,
+      tileUrl:(z,x,y) => url.replace('{z}', z).replace('{x}', x).replace('{y}', y)
+    }).then(() => { radarTileStats.loaded++; updateDebugLine(); });
+    return;
+  }
+  const layer = L.tileLayer(url, {
+    minZoom:4,
+    maxZoom:18,
+    maxNativeZoom:10,
+    opacity:opacity,
+    zIndex:zIndex,
+    pane:paneName,
+    detectRetina:false,
+    keepBuffer:2,
+    attribution:'気象庁 雨雲の動き'
+  });
+  layer.on('tileload', () => { radarTileStats.loaded++; updateDebugLine(); });
+  layer.on('tileerror', () => { radarTileStats.error++; updateDebugLine(); });
+  layer.addTo(map);
+  rainLayers.push(layer);
+  setTimeout(() => { try{ layer.redraw(); }catch(e){} }, 60);
+}
+
+function addRadar(map, time){
+  updateRainPaneStyle();
+  const mode = document.getElementById('radarMode').value;
+  const rainOpacity = +document.getElementById('rainOpacity').value;
+  // hrpns は降水強度本体です。雨がない場所は透明なので、単独だと「何も出ていない」ように見えます。
+  // hrpns_nd は欠測域などを示す補助レイヤーです。both では先に薄く載せ、上から降水強度を重ねます。
+  if(mode === 'both' || mode === 'hrpns_nd'){
+    addOneRadarLayer(map, time, 'hrpns_nd', 'rainNDPane', Math.min(0.35, rainOpacity * 0.45), 740);
+  }
+  if(mode === 'both' || mode === 'hrpns'){
+    addOneRadarLayer(map, time, 'hrpns', 'rainPane', rainOpacity, 780);
+  }
+}
+
+// 天気図は加工せずそのまま貼ります。画像の縦横比が分かった時点で、
+// 無歪みになるよう配置範囲を計算し直します。
+function addWxMap(map, item){
+  const layer = L.imageOverlay(item.url, getWeatherMapBounds(), {
+    opacity:+document.getElementById('wxOpacity').value,
+    interactive:false,
+    zIndex:450,
+    pane:'wxPane'
+  }).addTo(map);
+  wxLayers.push(layer);
+  ensureWxAspect(item.url).then(changed => {
+    if(!wxLayers.includes(layer)) return; // 既に時刻が変わって破棄済み
+    if(changed){
+      applyMapAspect(); // 地図ボックスの縦横比を天気図に合わせる
+      wxLayers.forEach(l => { try{ l.setBounds(L.latLngBounds(getWeatherMapBounds())); }catch(e){} });
+      fitJapanToWeatherMap({force:true}); // 天気図の実寸に合わせて表示範囲を取り直す
+    }
+  });
+}
+
+function addObservationPoint(map, place, label){
+  const pos = placeOnMap(map, place.lat, place.lon);
+  const marker = L.circleMarker(pos, {
+    radius:8,
+    color:'#ffffff',
+    weight:3,
+    fillColor:'#ef4444',
+    fillOpacity:1,
+    pane:'obsPane'
+  }).bindPopup(`${label}<br>緯度 ${place.lat.toFixed(4)} / 経度 ${place.lon.toFixed(4)}`);
+  marker.addTo(map);
+  obsLayers.push(marker);
+  const labelIcon = L.divIcon({
+    className:'obs-label',
+    html:label,
+    iconSize:null,
+    iconAnchor:[-12, 20]
+  });
+  const lab = L.marker(pos, {icon:labelIcon, pane:'obsPane', interactive:false}).addTo(map);
+  obsLayers.push(lab);
+}
+
+function updateObservationPoints(){
+  clearLayerArray(obsLayers);
+  const reg = REGIONS[document.getElementById('regionSelect').value];
+  addObservationPoint(mapJapan, JAPAN_POINT, 'グラフ代表点：東京');
+  addObservationPoint(mapRegion, reg, `グラフ観測点：${reg.name}`);
+}
+
+function updateOverlays(){
+  if(!timeRows.length) return;
+  const row = timeRows[selectedIndex];
+  const t = row.date;
+  document.getElementById('selectedTime').textContent = fmtTime(t);
+  clearLayerArray(rainLayers); clearLayerArray(wxLayers); clearLayerArray(himawariLayers);
+  radarTileStats = {loaded:0, error:0};
+  himawariTileStats = {loaded:0, error:0};
+  const nowc = closestByTime(nowcTimes, t);
+  const wx = closestByTime(wxMaps, t);
+  const sat = closestByTime(himawariTimes, t);
+  // 衛星画像→天気図→雨雲レーダーの順に追加し、雨雲レーダーを必ず上に載せます。
+  if(sat && (document.getElementById('himawariVisibleToggle').checked || document.getElementById('himawariCloudTopToggle').checked)){
+    addHimawariLayers(mapJapan, sat); addHimawariLayers(mapRegion, sat);
+  }
+  if(document.getElementById('chartToggle').checked && wx){ addWxMap(mapJapan, wx); addWxMap(mapRegion, wx); }
+  if(document.getElementById('rainToggle').checked && nowc){ addRadar(mapJapan, nowc); addRadar(mapRegion, nowc); }
+  updateObservationPoints();
+  updateWbgtOverlay();
+  const radarGap = nowc ? Math.round(Math.abs(nowc.date-t)/60000) : null;
+  const wxGap = wx ? Math.round(Math.abs(wx.date-t)/3600000) : null;
+  const status = `レーダー:${nowc?fmtTime(nowc.date)+'（差'+radarGap+'分）':'なし'} / 天気図:${wx?fmtTime(wx.date)+'（差'+wxGap+'時間）':'なし'}`;
+  updateDebugLine();
+  document.getElementById('jpStatus').textContent = status;
+  document.getElementById('regStatus').textContent = status;
+  Object.values(charts).forEach(c => c.draw());
+  updateTuneValueLabels();
+  forceMapAndOverlayRefresh();
+  scheduleCloud3dRebuild();
+}
+
+// 選択時刻に連動して3D雲頂を作り直します。タイルを多数取得するので強めに間引き、
+// 作成中に次の要求が来た場合は完了後にもう一度だけ作り直します。
+let cloud3dRebuildTimer = null, cloud3dBusy = false, cloud3dPending = false;
+function scheduleCloud3dRebuild(){
+  const auto = document.getElementById('cloud3dAutoToggle');
+  if(!auto || !auto.checked) return;
+  clearTimeout(cloud3dRebuildTimer);
+  cloud3dRebuildTimer = setTimeout(() => {
+    cloud3dRebuildTimer = null;
+    if(cloud3dBusy){ cloud3dPending = true; return; }
+    buildCloud3d();
+  }, 600);
+}
+
+// ===== 選択時刻の変更（スライダー／グラフ面のドラッグ共通） =====
+// 波線とラベルは即時に更新し、重い処理（レーダー・天気図・衛星・暑さ指数の貼り直し）は
+// 連続操作中は間引いて、指を離した時点で確定させます。
+let overlayRefreshTimer = null;
+const OVERLAY_REFRESH_DELAY = 180;
+
+function setSelectedIndex(idx, opts){
+  opts = opts || {};
+  const max = timeRows.length - 1;
+  if(max < 0) return;
+  idx = Math.max(0, Math.min(max, Math.round(idx)));
+  const changed = (idx !== selectedIndex);
+  selectedIndex = idx;
+
+  if(changed){
+    const slider = document.getElementById('timeSlider');
+    if(slider && +slider.value !== idx) slider.value = idx;
+    document.getElementById('selectedTime').textContent = fmtTime(timeRows[idx].date);
+    // 波線だけを即時に描き直す（軽い）
+    Object.values(charts).forEach(c => { try{ c.draw(); }catch(e){} });
+  }
+
+  if(opts.immediate){
+    if(overlayRefreshTimer){ clearTimeout(overlayRefreshTimer); overlayRefreshTimer = null; updateOverlays(); }
+    else if(changed){ updateOverlays(); }
+  }else if(changed){
+    clearTimeout(overlayRefreshTimer);
+    overlayRefreshTimer = setTimeout(() => { overlayRefreshTimer = null; updateOverlays(); }, OVERLAY_REFRESH_DELAY);
+  }
+}
+
+// グラフ上のX座標を時系列のインデックスに変換します。
+function chartIndexFromClientX(canvasId, clientX){
+  const chart = charts[canvasId];
+  const canvas = document.getElementById(canvasId);
+  if(!chart || !canvas || !timeRows.length) return null;
+  const area = chart.chartArea;
+  if(!area) return null;
+  const rect = canvas.getBoundingClientRect();
+  // CSSピクセル → キャンバス内部座標（Chart.jsのchartAreaは内部座標系）
+  const scaleX = rect.width ? (canvas.clientWidth || rect.width) / rect.width : 1;
+  let x = (clientX - rect.left) * scaleX;
+  x = Math.max(area.left, Math.min(area.right, x));
+  // カテゴリ軸ならChart.jsの変換を使う（棒グラフのオフセットも考慮される）
+  let v = null;
+  const xs = chart.scales && chart.scales.x;
+  if(xs && typeof xs.getValueForPixel === 'function'){
+    const got = xs.getValueForPixel(x);
+    if(got != null && !isNaN(got)) v = got;
+  }
+  if(v == null){ // フォールバック：チャート領域内の比率で按分
+    const w = Math.max(1, area.right - area.left);
+    v = ((x - area.left) / w) * (timeRows.length - 1);
+  }
+  return v;
+}
+
+// グラフ面のクリック／タッチ＋左右ドラッグで選択時刻を動かせるようにします。
+function enableChartScrub(canvasId){
+  const canvas = document.getElementById(canvasId);
+  if(!canvas) return;
+  let dragging = false;
+
+  const apply = (clientX, immediate) => {
+    const v = chartIndexFromClientX(canvasId, clientX);
+    if(v == null) return;
+    setSelectedIndex(v, {immediate});
+  };
+
+  canvas.addEventListener('pointerdown', ev => {
+    if(ev.button != null && ev.button !== 0) return; // 左ボタン／タッチのみ
+    if(!timeRows.length) return;
+    dragging = true;
+    canvas.classList.add('scrubbing');
+    try{ canvas.setPointerCapture(ev.pointerId); }catch(e){}
+    apply(ev.clientX, false);
+    ev.preventDefault();
+  });
+
+  canvas.addEventListener('pointermove', ev => {
+    if(!dragging) return;
+    apply(ev.clientX, false);
+    ev.preventDefault();
+  });
+
+  const end = ev => {
+    if(!dragging) return;
+    dragging = false;
+    canvas.classList.remove('scrubbing');
+    try{ canvas.releasePointerCapture(ev.pointerId); }catch(e){}
+    apply(ev.clientX, true); // 離した時点で確定し、各オーバーレイを更新
+  };
+  canvas.addEventListener('pointerup', end);
+  canvas.addEventListener('pointercancel', end);
+}
+
+function updateDebugLine(){
+  const row = timeRows[selectedIndex];
+  const t = row ? row.date : new Date();
+  const nowc = closestByTime(nowcTimes, t);
+  const wx = closestByTime(wxMaps, t);
+  const sat = closestByTime(himawariTimes, t);
+  const sample = nowc
+    ? makeNowcTileUrl(nowc, 'hrpns').replace('{z}', 5).replace('{x}', 27).replace('{y}', 12)
+    : 'なし';
+  const satSample = sat
+    ? makeHimawariTileUrl(sat, HIMAWARI_PRODUCTS.cloudTop).replace('{z}', 6).replace('{x}', 55).replace('{y}', 25)
+    : 'なし';
+  const natN = wbgtGroups.national ? wbgtGroups.national.size : 0;
+  const prefN = wbgtGroups.pref ? wbgtGroups.pref.size : 0;
+  const wbgtInfo = `暑さ指数：全国県庁所在地 ${natN}地点${wbgtStatus.national?'（'+wbgtStatus.national+'）':''} / 県内 ${prefN}地点${wbgtStatus.pref?'（'+wbgtStatus.pref+'）':''}。`;
+  document.getElementById('debugBox').textContent =
+    `取得：雨雲レーダー ${nowcTimes.length}件、天気図 ${wxMaps.length}件、ひまわり ${himawariTimes.length}件。` +
+    `雨雲タイル読込 ${radarTileStats.loaded}件 / エラー ${radarTileStats.error}件。` +
+    `衛星タイル読込 ${himawariTileStats.loaded}件 / エラー ${himawariTileStats.error}件。` +
+    wbgtInfo +
+    `雨雲表示=${document.getElementById('radarMode').value}。` +
+    `雨雲URL例: ${sample} / ひまわりURL例: ${satSample}`;
+}
+
+
+function updateCloud3dLabels(){
+  const h = document.getElementById('cloud3dHeightScale');
+  const r = document.getElementById('cloud3dResolution');
+  const o = document.getElementById('cloud3dOpacity');
+  const bo = document.getElementById('cloud3dBaseOpacity');
+  if(h) document.getElementById('cloud3dHeightScaleVal').textContent = h.value;
+  if(r) document.getElementById('cloud3dResolutionVal').textContent = r.value;
+  if(o) document.getElementById('cloud3dOpacityVal').textContent = (+o.value).toFixed(2);
+  if(bo) document.getElementById('cloud3dBaseOpacityVal').textContent = (+bo.value).toFixed(2);
+}
+
+function lonLatToTileXY(lon, lat, z){
+  const latRad = lat * Math.PI / 180;
+  const n = Math.pow(2, z);
+  const x = Math.floor((lon + 180) / 360 * n);
+  const y = Math.floor((1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n);
+  return {x: Math.max(0, Math.min(n-1, x)), y: Math.max(0, Math.min(n-1, y))};
+}
+
+function getCloud3dMap(){
+  return document.getElementById('cloud3dTarget').value === 'japan' ? mapJapan : mapRegion;
+}
+
+function limitTileRange(minX, maxX, minY, maxY, maxTiles){
+  let width = maxX - minX + 1;
+  let height = maxY - minY + 1;
+  while(width * height > maxTiles){
+    if(width >= height && width > 1){ minX++; maxX--; }
+    else if(height > 1){ minY++; maxY--; }
+    width = maxX - minX + 1;
+    height = maxY - minY + 1;
+  }
+  return {minX, maxX, minY, maxY};
+}
+
+function loadImageForCanvas(url){
+  return new Promise((resolve, reject) => {
+    const img = new Image();
+    img.crossOrigin = 'anonymous';
+    img.onload = () => resolve(img);
+    img.onerror = () => reject(new Error('画像タイルを読み込めません: ' + url));
+    img.src = url;
+  });
+}
+
+
+function makeHimawariTileUrl(time, product){
+  return HIMAWARI_TILE_TEMPLATE
+    .replace('{base}', time.base)
+    .replace('{valid}', time.valid)
+    .replace('{band}', product.band)
+    .replace('{prod}', product.prod);
+}
+
+let himawariTileStats = {loaded:0, error:0};
+
+function addOneHimawariLayer(map, time, productKey){
+  const product = HIMAWARI_PRODUCTS[productKey];
+  if(!product) return;
+  const url = makeHimawariTileUrl(time, product);
+  if(map === mapJapan){
+    // 日本全土は天気図の図法に再投影して重ねます（ひまわりJPタイルはz=6が原寸）
+    addWarpedOverlay(map, {
+      name:'himawari', extra:`${productKey}|${time.base}|${time.valid}`, z:6,
+      pane:product.pane, zIndex:product.zIndex,
+      opacity:+document.getElementById('himawariOpacity').value, store:himawariLayers,
+      tileUrl:(z,x,y) => url.replace('{z}', z).replace('{x}', x).replace('{y}', y)
+    }).then(() => { himawariTileStats.loaded++; updateDebugLine(); });
+    return;
+  }
+  const layer = L.tileLayer(url, {
+    minZoom:3,
+    maxZoom:18,
+    minNativeZoom:6,
+    maxNativeZoom:6,
+    opacity:+document.getElementById('himawariOpacity').value,
+    zIndex:product.zIndex,
+    pane:product.pane,
+    detectRetina:false,
+    keepBuffer:2,
+    attribution:`気象庁 ${product.label}`
+  });
+  layer.on('tileload', () => { himawariTileStats.loaded++; updateDebugLine(); });
+  layer.on('tileerror', () => { himawariTileStats.error++; updateDebugLine(); });
+  layer.addTo(map);
+  himawariLayers.push(layer);
+  setTimeout(() => { try{ layer.redraw(); }catch(e){} }, 80);
+}
+
+function addHimawariLayers(map, time){
+  if(document.getElementById('himawariVisibleToggle').checked){
+    addOneHimawariLayer(map, time, 'visible');
+  }
+  if(document.getElementById('himawariCloudTopToggle').checked){
+    addOneHimawariLayer(map, time, 'cloudTop');
+  }
+}
+
+async function buildCloudTopMosaic(sat, map){
+  const tileZ = 6; // 気象庁ひまわりJPタイルの標準解像度として扱う
+  const b = mapGeoBounds(map); // 日本全土地図は天気図座標系なので実緯度経度に戻す
+  const nw = lonLatToTileXY(b.getWest(), b.getNorth(), tileZ);
+  const se = lonLatToTileXY(b.getEast(), b.getSouth(), tileZ);
+  let minX = Math.min(nw.x, se.x), maxX = Math.max(nw.x, se.x);
+  let minY = Math.min(nw.y, se.y), maxY = Math.max(nw.y, se.y);
+  ({minX, maxX, minY, maxY} = limitTileRange(minX, maxX, minY, maxY, 48));
+  const tileSize = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = (maxX - minX + 1) * tileSize;
+  canvas.height = (maxY - minY + 1) * tileSize;
+  const ctx = canvas.getContext('2d');
+  let ok = 0, fail = 0;
+  const product = HIMAWARI_PRODUCTS.cloudTop;
+  for(let y=minY; y<=maxY; y++){
+    for(let x=minX; x<=maxX; x++){
+      const url = makeHimawariTileUrl(sat, product).replace('{z}', tileZ).replace('{x}', x).replace('{y}', y);
+      try{
+        const img = await loadImageForCanvas(url);
+        ctx.drawImage(img, (x-minX)*tileSize, (y-minY)*tileSize, tileSize, tileSize);
+        ok++;
+      }catch(e){
+        fail++;
+      }
+    }
+  }
+  if(ok === 0) throw new Error('雲頂強調画像タイルを取得できませんでした。時刻を変えるか、しばらく待って再読み込みしてください。');
+  return {canvas, ok, fail, tileZ, minX, maxX, minY, maxY};
+}
+
+
+async function buildGsiBaseMapMosaic(mosaic){
+  // 3D表示の高さ0面に貼る地図です。上のLeaflet地図と同じ地理院淡色地図を、雲頂強調画像と同じタイル範囲で合成します。
+  const tileSize = 256;
+  const canvas = document.createElement('canvas');
+  canvas.width = mosaic.canvas.width;
+  canvas.height = mosaic.canvas.height;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#dbeafe';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+  let ok = 0, fail = 0;
+  for(let y=mosaic.minY; y<=mosaic.maxY; y++){
+    for(let x=mosaic.minX; x<=mosaic.maxX; x++){
+      const url = `https://cyberjapandata.gsi.go.jp/xyz/pale/${mosaic.tileZ}/${x}/${y}.png`;
+      try{
+        const img = await loadImageForCanvas(url);
+        ctx.drawImage(img, (x-mosaic.minX)*tileSize, (y-mosaic.minY)*tileSize, tileSize, tileSize);
+        ok++;
+      }catch(e){
+        fail++;
+      }
+    }
+  }
+  return {canvas, ok, fail};
+}
+
+function colorToCloudHeight(r,g,b){
+  // 雲頂強調画像は「色の違い」が雲頂の冷たさ・高さの目安になるので、彩度と明るさを合わせて高さ化します。
+  const rn=r/255, gn=g/255, bn=b/255;
+  const max=Math.max(rn,gn,bn), min=Math.min(rn,gn,bn);
+  const sat = max === 0 ? 0 : (max-min)/max;
+  const lum = 0.2126*rn + 0.7152*gn + 0.0722*bn;
+  const colorContrast = Math.abs(rn-gn) + Math.abs(gn-bn) + Math.abs(bn-rn);
+  let h = sat*0.72 + lum*0.38 + colorContrast*0.18 - 0.18;
+  // 黒に近い宇宙・海面・背景は低くする
+  if(lum < 0.08) h *= 0.15;
+  return Math.max(0, Math.min(1, h));
+}
+
+
+
+// 3D表示用の簡略化した日本列島の輪郭線です。雲頂強調メッシュ上に黄色で重ねます。
+const JAPAN_OUTLINES = [
+  // 北海道
+  [[141.0,45.5],[142.0,45.4],[143.2,44.7],[145.0,43.4],[145.4,42.9],[144.4,42.0],[143.2,41.7],[141.8,42.0],[140.6,42.6],[140.4,43.4],[141.0,44.2],[141.0,45.5]],
+  // 本州
+  [[140.9,41.5],[140.2,40.7],[139.7,40.1],[139.1,39.5],[138.8,38.8],[138.4,38.2],[137.6,37.5],[136.8,37.2],[136.1,36.8],[135.5,35.7],[134.9,35.5],[134.0,35.6],[133.2,35.4],[132.5,34.8],[131.9,34.4],[131.2,34.1],[130.9,33.9],[131.6,34.3],[132.8,34.2],[133.9,34.1],[135.0,34.5],[136.0,34.7],[137.0,34.6],[138.0,34.8],[138.9,35.1],[139.8,35.5],[140.6,36.2],[141.1,37.1],[141.0,38.2],[141.6,39.0],[141.8,40.0],[141.3,40.8],[140.9,41.5]],
+  // 四国
+  [[132.0,34.4],[133.0,34.3],[134.0,34.4],[134.9,34.3],[134.7,33.8],[133.8,33.4],[132.9,33.2],[132.0,33.4],[131.8,33.8],[132.0,34.4]],
+  // 九州
+  [[130.8,33.9],[131.4,33.5],[131.8,32.9],[131.5,32.2],[130.9,31.5],[130.4,31.0],[130.0,31.3],[129.6,32.0],[129.7,32.7],[130.1,33.2],[130.8,33.9]],
+  // 沖縄本島付近
+  [[127.6,26.8],[128.1,26.7],[128.3,26.3],[127.9,26.1],[127.5,26.2],[127.2,26.5],[127.6,26.8]]
+];
+
+function tileXYToLonLat(x, y, z){
+  const n = Math.pow(2, z);
+  const lon = x / n * 360 - 180;
+  const latRad = Math.atan(Math.sinh(Math.PI * (1 - 2 * y / n)));
+  return {lon, lat: latRad * 180 / Math.PI};
+}
+
+function lonLatToGlobalPixel(lon, lat, z){
+  const latRad = lat * Math.PI / 180;
+  const n = Math.pow(2, z);
+  const x = (lon + 180) / 360 * n * 256;
+  const y = (1 - Math.log(Math.tan(latRad) + 1 / Math.cos(latRad)) / Math.PI) / 2 * n * 256;
+  return {x, y};
+}
+
+function addJapanOutlineToCloud3d(mosaic, meshWidth, meshDepth, zHeight){
+  ensureCloud3dRenderer();
+  if(cloud3d.outline){ cloud3d.scene.remove(cloud3d.outline); }
+  const group = new THREE.Group();
+  const mat = new THREE.LineBasicMaterial({color:0xffff00, linewidth:3, depthTest:false});
+  const left = mosaic.minX * 256;
+  const top = mosaic.minY * 256;
+  const cw = mosaic.canvas.width;
+  const ch = mosaic.canvas.height;
+  JAPAN_OUTLINES.forEach(poly => {
+    const pts = [];
+    poly.forEach(([lon,lat]) => {
+      const p = lonLatToGlobalPixel(lon, lat, mosaic.tileZ);
+      const px = p.x - left;
+      const py = p.y - top;
+      if(px >= -20 && px <= cw + 20 && py >= -20 && py <= ch + 20){
+        const x = (px / cw - 0.5) * meshWidth;
+        const y = (0.5 - py / ch) * meshDepth;
+        pts.push(new THREE.Vector3(x, y, zHeight));
+      }
+    });
+    if(pts.length >= 2){
+      const geom = new THREE.BufferGeometry().setFromPoints(pts);
+      const line = new THREE.Line(geom, mat);
+      line.renderOrder = 999;
+      group.add(line);
+    }
+  });
+  cloud3d.outline = group;
+  cloud3d.scene.add(group);
+}
+
+function ensureCloud3dRenderer(){
+  if(typeof THREE === 'undefined') throw new Error('Three.jsを読み込めませんでした。インターネット接続またはCDNへのアクセスを確認してください。');
+  const host = document.getElementById('cloud3dCanvas');
+  if(!cloud3d.renderer){
+    cloud3d.scene = new THREE.Scene();
+    cloud3d.scene.background = new THREE.Color(0xeaf6ff);
+    cloud3d.camera = new THREE.PerspectiveCamera(45, host.clientWidth / host.clientHeight, 0.1, 3000);
+    cloud3d.camera.position.set(0, -230, 160);
+    cloud3d.renderer = new THREE.WebGLRenderer({antialias:true});
+    cloud3d.renderer.setPixelRatio(Math.min(window.devicePixelRatio || 1, 2));
+    cloud3d.renderer.setSize(host.clientWidth, host.clientHeight);
+    host.innerHTML = '';
+    host.appendChild(cloud3d.renderer.domElement);
+    if(!THREE.OrbitControls) throw new Error('OrbitControlsを読み込めませんでした。Three.js examples のCDN読み込みを確認してください。');
+    cloud3d.controls = new THREE.OrbitControls(cloud3d.camera, cloud3d.renderer.domElement);
+    cloud3d.controls.target.set(0,0,20);
+    cloud3d.controls.enableDamping = true;
+    const amb = new THREE.AmbientLight(0xffffff, 0.8);
+    cloud3d.scene.add(amb);
+    const dir = new THREE.DirectionalLight(0xffffff, 0.7);
+    dir.position.set(100,-120,180);
+    cloud3d.scene.add(dir);
+    const grid = new THREE.GridHelper(240, 24, 0x94a3b8, 0xcbd5e1);
+    grid.rotation.x = Math.PI / 2;
+    grid.position.z = -2;
+    cloud3d.scene.add(grid);
+    const animate = () => {
+      cloud3d.animationId = requestAnimationFrame(animate);
+      if(cloud3d.controls) cloud3d.controls.update();
+      cloud3d.renderer.render(cloud3d.scene, cloud3d.camera);
+    };
+    animate();
+  }
+  resizeCloud3dRenderer();
+}
+
+function resizeCloud3dRenderer(){
+  if(!cloud3d.renderer) return;
+  const host = document.getElementById('cloud3dCanvas');
+  const w = host.clientWidth || 800;
+  const h = host.clientHeight || 500;
+  cloud3d.camera.aspect = w / h;
+  cloud3d.camera.updateProjectionMatrix();
+  cloud3d.renderer.setSize(w, h);
+}
+
+function resetCloud3dView(){
+  ensureCloud3dRenderer();
+  cloud3d.camera.position.set(0, -230, 160);
+  cloud3d.controls.target.set(0,0,20);
+  cloud3d.controls.update();
+}
+
+function createCloud3dMeshFromCanvas(canvas, mosaic=null, baseCanvas=null){
+  ensureCloud3dRenderer();
+
+  if(cloud3d.mesh){
+    cloud3d.scene.remove(cloud3d.mesh);
+    cloud3d.mesh.geometry.dispose();
+    cloud3d.mesh.material.dispose();
+  }
+  if(cloud3d.baseMesh){
+    cloud3d.scene.remove(cloud3d.baseMesh);
+    cloud3d.baseMesh.geometry.dispose();
+    cloud3d.baseMesh.material.dispose();
+  }
+  if(cloud3d.texture){ cloud3d.texture.dispose(); }
+  if(cloud3d.baseTexture){ cloud3d.baseTexture.dispose(); }
+
+  const res = +document.getElementById('cloud3dResolution').value || 96;
+  const heightScale = +document.getElementById('cloud3dHeightScale').value || 55;
+  const cloudOpacity = +document.getElementById('cloud3dOpacity').value || 0.68;
+  const baseOpacity = +document.getElementById('cloud3dBaseOpacity').value || 1.0;
+  const wire = document.getElementById('cloud3dWireToggle').checked;
+
+  const sample = document.createElement('canvas');
+  sample.width = res;
+  sample.height = res;
+  const sctx = sample.getContext('2d');
+  sctx.drawImage(canvas, 0, 0, res, res);
+
+  let img;
+  try{
+    img = sctx.getImageData(0,0,res,res);
+  }catch(e){
+    throw new Error('ブラウザのCORS制限により画像の画素値を読めませんでした。http://localhost:8000 で開き直してください。それでも出る場合は、気象庁側のCORS設定で3D化だけが制限されています。');
+  }
+
+  const aspect = canvas.width / canvas.height;
+  const width = 220;
+  const depth = width / aspect;
+
+  // 高さ0の地図面
+  if(baseCanvas){
+    const baseTexCanvas = document.createElement('canvas');
+    baseTexCanvas.width = 1024;
+    baseTexCanvas.height = 1024;
+    baseTexCanvas.getContext('2d').drawImage(baseCanvas, 0, 0, 1024, 1024);
+    cloud3d.baseTexture = new THREE.CanvasTexture(baseTexCanvas);
+    cloud3d.baseTexture.needsUpdate = true;
+
+    const baseGeom = new THREE.PlaneGeometry(width, depth, 1, 1);
+    const baseMat = new THREE.MeshBasicMaterial({
+      map: cloud3d.baseTexture,
+      side: THREE.DoubleSide,
+      transparent: true,
+      opacity: baseOpacity
+    });
+    cloud3d.baseMesh = new THREE.Mesh(baseGeom, baseMat);
+    cloud3d.baseMesh.position.z = -0.8;
+    cloud3d.scene.add(cloud3d.baseMesh);
+  }
+
+  // 透過した雲頂強調画像を高さつきメッシュにする
+  const texCanvas = document.createElement('canvas');
+  texCanvas.width = 1024;
+  texCanvas.height = 1024;
+  texCanvas.getContext('2d').drawImage(canvas, 0, 0, 1024, 1024);
+  cloud3d.texture = new THREE.CanvasTexture(texCanvas);
+  cloud3d.texture.needsUpdate = true;
+
+  const geom = new THREE.PlaneGeometry(width, depth, res-1, res-1);
+  const pos = geom.attributes.position;
+  for(let j=0; j<res; j++){
+    for(let i=0; i<res; i++){
+      const idx = (j*res + i)*4;
+      const r = img.data[idx], g = img.data[idx+1], b = img.data[idx+2];
+      const h = colorToCloudHeight(r,g,b) * heightScale;
+      const v = j*res + i;
+      pos.setZ(v, h);
+    }
+  }
+  geom.computeVertexNormals();
+
+  const mat = new THREE.MeshPhongMaterial({
+    map: cloud3d.texture,
+    side: THREE.DoubleSide,
+    wireframe: wire,
+    shininess: 18,
+    transparent: !wire,
+    opacity: wire ? 1.0 : cloudOpacity,
+    depthWrite: wire ? true : false
+  });
+  cloud3d.mesh = new THREE.Mesh(geom, mat);
+  cloud3d.mesh.position.z = 0;
+  cloud3d.scene.add(cloud3d.mesh);
+
+  cloud3d.lastCanvas = canvas;
+  cloud3d.lastBaseCanvas = baseCanvas;
+  cloud3d.lastMosaic = mosaic;
+}
+
+async function buildCloud3d(){
+  const status = document.getElementById('cloud3dStatus');
+  cloud3dBusy = true;
+  try{
+    updateCloud3dLabels();
+    const row = timeRows[selectedIndex];
+    if(!row) throw new Error('時系列データがまだ読み込まれていません。');
+    const sat = closestByTime(himawariTimes, row.date);
+    if(!sat) throw new Error('ひまわり時刻データがありません。');
+    const map = getCloud3dMap();
+    const targetLabel = document.getElementById('cloud3dTarget').value === 'japan' ? '日本全体' : REGIONS[document.getElementById('regionSelect').value].name;
+    status.textContent = `3D作成中：${targetLabel} / 衛星 ${fmtTime(sat.date)} の雲頂強調画像タイルを読み込み中...`;
+    const mosaic = await buildCloudTopMosaic(sat, map);
+    status.textContent = `3D作成中：${targetLabel} / 高さ0の地図タイルを合成中...`;
+    const baseMosaic = await buildGsiBaseMapMosaic(mosaic);
+    createCloud3dMeshFromCanvas(mosaic.canvas, mosaic, baseMosaic.canvas);
+    cloud3d.lastSat = sat;
+    document.getElementById('cloud3dHeadStatus').textContent = `${targetLabel} / ${fmtTime(sat.date)} の雲頂強調を3D化`;
+    status.textContent = `3D作成完了：${targetLabel} / 衛星 ${fmtTime(sat.date)} / 雲タイル成功 ${mosaic.ok}件・失敗 ${mosaic.fail}件 / 地図タイル成功 ${baseMosaic.ok}件・失敗 ${baseMosaic.fail}件 / タイル範囲 z${mosaic.tileZ} x${mosaic.minX}-${mosaic.maxX} y${mosaic.minY}-${mosaic.maxY}\n操作：ドラッグで回転、ホイールで拡大縮小、右ドラッグで移動。高さ0に地図を貼り、その上に雲頂強調画像を透過メッシュとして重ねています。高さは雲頂強調画像の色を簡易的に数値化したもので、実高度そのものではありません。`;
+  }catch(e){
+    console.error(e);
+    status.textContent = '3D作成に失敗しました：' + e.message;
+  }finally{
+    cloud3dBusy = false;
+    // 作成中に時刻が変わっていた場合は、最新の時刻でもう一度だけ作り直します。
+    if(cloud3dPending){ cloud3dPending = false; scheduleCloud3dRebuild(); }
+  }
+}
+
+function refreshCloud3dMaterial(){
+  if(!cloud3d.lastCanvas) return;
+  try{ createCloud3dMeshFromCanvas(cloud3d.lastCanvas, cloud3d.lastMosaic, cloud3d.lastBaseCanvas); }catch(e){ console.error(e); }
+}
+
+// ===== 3D形状のSTL出力 =====
+// 表示中のTHREE.Mesh群を1つのバイナリSTLに書き出します（ワールド座標へ変換、法線を計算）。
+function meshesToStlBinary(meshes){
+  const tris = [];
+  const vA = new THREE.Vector3(), vB = new THREE.Vector3(), vC = new THREE.Vector3();
+  const cb = new THREE.Vector3(), ab = new THREE.Vector3();
+  for(const mesh of meshes){
+    if(!mesh || !mesh.geometry) continue;
+    mesh.updateMatrixWorld(true);
+    const g = mesh.geometry, pos = g.attributes.position, idx = g.index, m = mesh.matrixWorld;
+    if(!pos) continue;
+    const triCount = idx ? idx.count/3 : pos.count/3;
+    for(let i=0;i<triCount;i++){
+      const ia = idx ? idx.getX(i*3)   : i*3;
+      const ib = idx ? idx.getX(i*3+1) : i*3+1;
+      const ic = idx ? idx.getX(i*3+2) : i*3+2;
+      vA.fromBufferAttribute(pos, ia).applyMatrix4(m);
+      vB.fromBufferAttribute(pos, ib).applyMatrix4(m);
+      vC.fromBufferAttribute(pos, ic).applyMatrix4(m);
+      cb.subVectors(vC, vB); ab.subVectors(vA, vB); cb.cross(ab);
+      if(cb.lengthSq() > 0) cb.normalize();
+      tris.push([cb.x,cb.y,cb.z, vA.x,vA.y,vA.z, vB.x,vB.y,vB.z, vC.x,vC.y,vC.z]);
+    }
+  }
+  const buf = new ArrayBuffer(84 + tris.length*50);
+  const dv = new DataView(buf);
+  dv.setUint32(80, tris.length, true); // 先頭80byteはヘッダ（0埋め）、続いて三角形数
+  let off = 84;
+  for(const t of tris){
+    for(let k=0;k<12;k++){ dv.setFloat32(off, t[k], true); off += 4; }
+    dv.setUint16(off, 0, true); off += 2; // 属性バイト数
+  }
+  return buf;
+}
+
+function exportCloud3dStl(){
+  const status = document.getElementById('cloud3dStatus');
+  if(!cloud3d.mesh){ alert('先に「現在時刻で3D作成」を押して3D形状を作成してください。'); return; }
+  try{
+    const buf = meshesToStlBinary([cloud3d.mesh]); // 表示中の雲頂メッシュ形状を書き出し
+    const faces = (buf.byteLength - 84) / 50;
+    const blob = new Blob([buf], {type:'application/octet-stream'});
+    const z = n => String(n).padStart(2,'0'); const d = new Date();
+    const fname = `cloudtop_3d_${d.getFullYear()}${z(d.getMonth()+1)}${z(d.getDate())}_${z(d.getHours())}${z(d.getMinutes())}${z(d.getSeconds())}.stl`;
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = fname;
+    document.body.appendChild(a); a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+    status.textContent = `STLを出力しました：${fname}（三角形 ${faces} 面）。3Dビューに表示中の雲頂形状をそのまま書き出しています。`;
+  }catch(e){
+    console.error(e);
+    status.textContent = 'STL出力に失敗しました：' + e.message;
+    alert('STL出力に失敗しました：' + e.message);
+  }
+}
+
+async function reloadAll(){
+  const errorBox = document.getElementById('errorBox'); errorBox.textContent = '';
+  document.getElementById('timeSlider').disabled = true;
+  try{
+    await Promise.all([loadNowcTimes(), loadWeatherMaps(), loadHimawariTimes()]);
+    const reg = REGIONS[document.getElementById('regionSelect').value];
+    document.getElementById('regionTitle').textContent = reg.name;
+    mapRegion.setView([reg.lat, reg.lon], reg.zoom);
+    setTimeout(() => { mapJapan.invalidateSize(true); mapRegion.invalidateSize(true); fitJapanToWeatherMap(); }, 0);
+    const [jpRows, regRows] = await Promise.all([loadWeatherSeries(JAPAN_POINT), loadWeatherSeries(reg)]);
+    timeRows = regRows;
+    selectedIndex = Math.min(regRows.findIndex(r => r.date >= new Date()), regRows.length-1);
+    if(selectedIndex < 0) selectedIndex = Math.floor(regRows.length/2);
+    const slider = document.getElementById('timeSlider'); slider.min = 0; slider.max = regRows.length-1; slider.value = selectedIndex; slider.disabled = false;
+    buildChart('chartJapan', jpRows, '日本全土の代表点：東京（1日前〜明日）');
+    buildChart('chartRegion', regRows, `${reg.name}（1日前〜明日）`);
+    fitJapanToWeatherMap();
+    updateOverlays();
+    reloadWbgt(); // 暑さ指数は非同期で取得し、取得でき次第オーバーレイを更新します。
+  }catch(e){
+    console.error(e); errorBox.textContent = 'データ取得に失敗しました。ローカルファイルとして直接開いている場合は、同じフォルダで `python3 -m http.server 8000` を実行し、http://localhost:8000/index.html で開いてください。\n\n' + e.message;
+  }
+}
+
+document.addEventListener('DOMContentLoaded', () => {
+  initMaps();
+  document.getElementById('timeSlider').addEventListener('input', e => setSelectedIndex(+e.target.value, {immediate:false}));
+  document.getElementById('timeSlider').addEventListener('change', e => setSelectedIndex(+e.target.value, {immediate:true}));
+  enableChartScrub('chartJapan');
+  enableChartScrub('chartRegion');
+  document.getElementById('regionSelect').addEventListener('change', reloadAll);
+  document.getElementById('reloadBtn').addEventListener('click', reloadAll);
+  ['rainToggle','chartToggle','himawariVisibleToggle','himawariCloudTopToggle','himawariOpacity','rainOpacity','wxOpacity','rainEnhance','radarMode'].forEach(id => {
+    document.getElementById(id).addEventListener('input', () => { updateTuneValueLabels(); updateOverlays(); });
+  });
+  // 合わせ具合を変えたら、背景地図とオーバーレイを再投影し直します（重いのでchangeで実行）。
+  ['wxScale','wxShiftX','wxShiftY'].forEach(id => {
+    document.getElementById(id).addEventListener('input', updateTuneValueLabels);
+    document.getElementById(id).addEventListener('change', () => {
+      updateTuneValueLabels(); rebuildJapanBase(); updateOverlays();
+    });
+  });
+  document.getElementById('cloud3dAutoToggle').addEventListener('change', () => {
+    if(document.getElementById('cloud3dAutoToggle').checked) scheduleCloud3dRebuild();
+  });
+  document.getElementById('wxResetBtn').addEventListener('click', resetWeatherMapTuning);
+  document.getElementById('buildCloud3dBtn').addEventListener('click', buildCloud3d);
+  document.getElementById('resetCloud3dViewBtn').addEventListener('click', resetCloud3dView);
+  document.getElementById('exportStlBtn').addEventListener('click', exportCloud3dStl);
+  document.getElementById('wbgtToggle').addEventListener('change', () => {
+    if(document.getElementById('wbgtToggle').checked && !wbgtGroups.national && !wbgtGroups.pref){ reloadWbgt(); }
+    else { updateWbgtOverlay(); }
+  });
+  ['cloud3dHeightScale','cloud3dResolution','cloud3dWireToggle','cloud3dOpacity','cloud3dBaseOpacity','cloud3dTarget'].forEach(id => {
+    document.getElementById(id).addEventListener('input', () => { updateCloud3dLabels(); if(cloud3d.lastCanvas && id !== 'cloud3dTarget') refreshCloud3dMaterial(); });
+  });
+  window.addEventListener('resize', () => { applyMapAspect(); forceMapAndOverlayRefresh(); fitJapanToWeatherMap({force:true}); resizeCloud3dRenderer(); });
+  window.addEventListener('load', () => setTimeout(() => { applyMapAspect(); forceMapAndOverlayRefresh(); fitJapanToWeatherMap({force:true}); }, 250));
+  updateTuneValueLabels();
+  updateCloud3dLabels();
+  renderWbgtLegend();
+  reloadAll();
+});
+</script>
+
+<div id="qrModal" class="appModal" aria-hidden="true">
+  <div class="appModalBackdrop" data-close-modal="qrModal"></div>
+  <section class="appModalPanel qrPanel" role="dialog" aria-modal="true" aria-labelledby="qrModalTitle">
+    <button class="appModalClose" type="button" data-close-modal="qrModal" aria-label="閉じる">×</button>
+    <h2 id="qrModalTitle">このアプリを開く</h2>
+    <img class="qrImage" src="https://api.qrserver.com/v1/create-qr-code/?size=360x360&amp;margin=8&amp;data=https%3A%2F%2Fscd-ku.github.io%2Fweather%2F" alt="https://scd-ku.github.io/weather/ のQRコード">
+    <a class="qrUrl" href="https://scd-ku.github.io/weather/" target="_blank" rel="noopener">https://scd-ku.github.io/weather/</a>
+  </section>
+</div>
+
+<div id="helpModal" class="appModal" aria-hidden="true">
+  <div class="appModalBackdrop" data-close-modal="helpModal"></div>
+  <section class="appModalPanel" role="dialog" aria-modal="true" aria-labelledby="helpModalTitle">
+    <button class="appModalClose" type="button" data-close-modal="helpModal" aria-label="閉じる">×</button>
+    <h2 id="helpModalTitle">特徴と使い方</h2>
+    <h3>このアプリの特徴</h3>
+    <ul>
+      <li>日本全体と選択地域を並べ、雨雲レーダー、気象庁天気図、暑さ指数、ひまわり衛星画像を重ねて比較できます。</li>
+      <li>温度・湿度・降雨量の時系列グラフと地図上の表示時刻が連動し、気象の変化を時間軸で追えます。</li>
+      <li>ひまわり画像から雲頂を強調した表示や3D表示を作成し、視点・高さ倍率・解像度などを調整できます。</li>
+      <li>3D表示中の雲頂形状はSTLとして書き出せます。</li>
+    </ul>
+    <h3>基本の使い方</h3>
+    <ol>
+      <li>「右側の地域」から見たい地域を選びます。</li>
+      <li>雨雲・天気図・暑さ指数・ひまわり可視・雲頂強調を必要に応じてON/OFFします。</li>
+      <li>時刻スライダー、またはグラフ上をクリック／タッチして左右へドラッグすると、地図・衛星画像・グラフの時刻が連動します。</li>
+      <li>表示が更新されない場合は「再読み込み」を押してください。</li>
+    </ol>
+    <h3>詳細設定・3D</h3>
+    <p>「詳細設定」では各レイヤーの透明度や天気図の位置合わせを調整できます。3D雲頂表示では対象、解像度、高さ倍率、透明度、ワイヤーフレーム表示などを変更し、マウスやタッチ操作で回転・拡大縮小できます。</p>
+  </section>
+</div>
+
+<div class="appCopyright">© Science Comunication Design Laboratory, Kagawa University</div>
+
+<script>
+(() => {
+  let lastFocus = null;
+  const openModal = id => {
+    const modal = document.getElementById(id);
+    if(!modal) return;
+    lastFocus = document.activeElement;
+    modal.classList.add('isOpen');
+    modal.setAttribute('aria-hidden','false');
+    document.body.classList.add('modalOpen');
+    modal.querySelector('.appModalClose')?.focus();
+  };
+  const closeModal = id => {
+    const modal = document.getElementById(id);
+    if(!modal) return;
+    modal.classList.remove('isOpen');
+    modal.setAttribute('aria-hidden','true');
+    if(!document.querySelector('.appModal.isOpen')) document.body.classList.remove('modalOpen');
+    if(lastFocus && typeof lastFocus.focus === 'function') lastFocus.focus();
+  };
+  document.addEventListener('DOMContentLoaded', () => {
+    document.getElementById('qrBtn')?.addEventListener('click', () => openModal('qrModal'));
+    document.getElementById('helpBtn')?.addEventListener('click', () => openModal('helpModal'));
+    document.querySelectorAll('[data-close-modal]').forEach(el => {
+      el.addEventListener('click', () => closeModal(el.getAttribute('data-close-modal')));
+    });
+  });
+  document.addEventListener('keydown', e => {
+    if(e.key === 'Escape'){
+      const modal = document.querySelector('.appModal.isOpen');
+      if(modal) closeModal(modal.id);
+    }
+  });
+})();
+</script>
+</body>
+</html>
