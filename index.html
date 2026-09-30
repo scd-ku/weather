@@ -674,20 +674,22 @@ function getWeatherMapBounds(){
 
 // 画像の縦横比を調べます（寸法を読むだけなのでCORSの制約を受けません）。
 function ensureWxAspect(url){
-  if(wxAspectCache.has(url)) return wxAspectCache.get(url);
-  const p = new Promise(resolve => {
-    const img = new Image();
-    img.onload = () => {
-      const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
-      if(w && h){
-        resolve(setWxImageAspect(h / w));
-      }else resolve(false);
-    };
-    img.onerror = () => resolve(false);
-    img.src = url;
-  });
-  wxAspectCache.set(url, p);
-  return p;
+  // キャッシュするのは「変更したか」ではなく画像そのものの比率。
+  // 同じURLを再利用したときに changed=true が繰り返され、再描画ループになるのを防ぎます。
+  let p = wxAspectCache.get(url);
+  if(!p){
+    p = new Promise(resolve => {
+      const img = new Image();
+      img.onload = () => {
+        const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
+        resolve((w && h) ? h / w : null);
+      };
+      img.onerror = () => resolve(null);
+      img.src = url;
+    });
+    wxAspectCache.set(url, p);
+  }
+  return p.then(a => a ? setWxImageAspect(a) : false);
 }
 
 // ===== 地図側データを天気図の図法（極心平射）へ再投影する =====
