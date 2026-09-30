@@ -169,9 +169,9 @@
         <label>雨雲透明度 <input id="rainOpacity" type="range" min="0" max="1" step="0.05" value="1"></label>
         <label>天気図透明度 <input id="wxOpacity" type="range" min="0" max="1" step="0.05" value="0.34"></label>
         <span class="advNote">天気図は加工せず基準にし、地図・雨雲・衛星・暑さ指数を天気図の図法へ再投影して重ねています。輪郭がずれる場合はここで合わせてください：</span>
-        <label>地図の合わせ 倍率 <span id="wxScaleVal" class="value">1.000</span><input id="wxScale" type="range" min="0.85" max="1.20" step="0.002" value="1.0"></label>
-        <label>東西 <span id="wxShiftXVal" class="value">0.000</span><input id="wxShiftX" type="range" min="-0.12" max="0.12" step="0.002" value="0"></label>
-        <label>南北 <span id="wxShiftYVal" class="value">0.000</span><input id="wxShiftY" type="range" min="-0.12" max="0.12" step="0.002" value="0"></label>
+        <label>地図の合わせ 倍率 <span id="wxScaleVal" class="value">1.180</span><input id="wxScale" type="range" min="0.85" max="1.35" step="0.001" value="1.1804"></label>
+        <label>東西 <span id="wxShiftXVal" class="value">0.027</span><input id="wxShiftX" type="range" min="-0.20" max="0.20" step="0.001" value="0.026651"></label>
+        <label>南北 <span id="wxShiftYVal" class="value">-0.145</span><input id="wxShiftY" type="range" min="-0.20" max="0.20" step="0.001" value="-0.144766"></label>
         <button id="wxResetBtn" type="button" class="smallBtn">天気図位置リセット</button>
       </div>
     </details>
@@ -311,6 +311,8 @@ let wbgtLayers = [];                       // 地図上のWBGT数値ラベル
 let wbgtGroups = {national:null, pref:null}; // Map: 地点番号 -> {date,wbgt} 時系列
 let wbgtStatus = {national:'', pref:''};   // 取得状況メッセージ
 let amedasTable = null;                    // 地点番号 -> {lat, lon, name}
+let amedasTablePromise = null;             // 同時取得を1本にまとめる
+let wbgtRetryTimer = null;
 let cloud3d = {renderer:null, scene:null, camera:null, controls:null, mesh:null, texture:null, baseMesh:null, baseTexture:null, lastCanvas:null, lastBaseCanvas:null, lastMosaic:null, lastSat:null, animationId:null};
 
 function fmtTime(d){ return new Intl.DateTimeFormat('ja-JP',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit',hour12:false}).format(d); }
@@ -434,14 +436,34 @@ async function fetchWbgtJson(apiUrl){
 // アメダス地点表を取得して {地点番号: {lat, lon, name}} を作ります（緯度経度は[度,分]→10進変換）。
 async function ensureAmedasTable(){
   if(amedasTable) return amedasTable;
-  const raw = await fetchJson(AMEDAS_TABLE_URL);
-  const t = {};
-  for(const [no, v] of Object.entries(raw)){
-    if(!v || !v.lat || !v.lon) continue;
-    t[no] = {lat: v.lat[0] + v.lat[1]/60, lon: v.lon[0] + v.lon[1]/60, name: v.kjName || no};
+  if(amedasTablePromise) return amedasTablePromise;
+
+  amedasTablePromise = (async () => {
+    let lastErr = null;
+    for(let attempt=0; attempt<3; attempt++){
+      try{
+        const raw = await fetchJson(AMEDAS_TABLE_URL + (attempt ? '?retry=' + Date.now() : ''));
+        const t = {};
+        for(const [no, v] of Object.entries(raw || {})){
+          if(!v || !v.lat || !v.lon) continue;
+          t[no] = {lat: v.lat[0] + v.lat[1]/60, lon: v.lon[0] + v.lon[1]/60, name: v.kjName || no};
+        }
+        if(Object.keys(t).length < 100) throw new Error('アメダス地点表が不完全です');
+        amedasTable = t;
+        return amedasTable;
+      }catch(e){
+        lastErr = e;
+        if(attempt < 2) await new Promise(resolve => setTimeout(resolve, 500 * (attempt + 1)));
+      }
+    }
+    throw lastErr || new Error('アメダス地点表を取得できません');
+  })();
+
+  try{
+    return await amedasTablePromise;
+  }finally{
+    if(!amedasTable) amedasTablePromise = null;
   }
-  amedasTable = t;
-  return amedasTable;
 }
 function amedasCoord(no){ return amedasTable ? amedasTable[String(no)] : null; }
 
@@ -507,10 +529,25 @@ async function loadWbgtGroup(nos){
   }
 }
 
-async function reloadWbgt(){
-  if(!document.getElementById('wbgtToggle').checked){ updateWbgtOverlay(); return; }
+async function reloadWbgt(retryCount=0){
+  const toggle = document.getElementById('wbgtToggle');
+  if(toggle && !toggle.checked){ updateWbgtOverlay(); return; }
+
   const reg = REGIONS[document.getElementById('regionSelect').value];
-  try{ await ensureAmedasTable(); }catch(e){ /* 座標表が無くても後続はtryする */ }
+  clearTimeout(wbgtRetryTimer);
+
+  try{
+    await ensureAmedasTable();
+  }catch(e){
+    wbgtStatus.national = '地点座標の取得待ち';
+    wbgtStatus.pref = '地点座標の取得待ち';
+    updateDebugLine();
+    if(retryCount < 2){
+      wbgtRetryTimer = setTimeout(() => reloadWbgt(retryCount + 1), 1200 * (retryCount + 1));
+    }
+    return;
+  }
+
   const jobs = [
     loadWbgtGroup(CAPITAL_POINTS.map(p=>p.no))
       .then(g=>{wbgtGroups.national=g; wbgtStatus.national='';})
@@ -520,8 +557,14 @@ async function reloadWbgt(){
       .catch(e=>{wbgtGroups.pref=null; wbgtStatus.pref=e.message;})
   ];
   await Promise.allSettled(jobs);
+
+  // APIやCORSの一時失敗時は自動で再取得する。既に取得できた側は保持して表示する。
   updateWbgtOverlay();
   updateDebugLine();
+
+  if(!wbgtGroups.national && !wbgtGroups.pref && retryCount < 2){
+    wbgtRetryTimer = setTimeout(() => reloadWbgt(retryCount + 1), 1500 * (retryCount + 1));
+  }
 }
 
 // 色と数値のみのコンパクトなラベル（多地点表示用）。小数は表示しません（四捨五入）。
@@ -560,8 +603,16 @@ function updateWbgtOverlay(){
   clearLayerArray(wbgtLayers);
   const on = document.getElementById('wbgtToggle');
   if(on && !on.checked) return;
-  renderWbgtGroup(mapJapan, wbgtGroups.national, true); // 全国は小さめ文字（重なり軽減）
-  renderWbgtGroup(mapRegion, wbgtGroups.pref, false);
+  if(!amedasTable) return;
+  const n1 = renderWbgtGroup(mapJapan, wbgtGroups.national, true); // 全国は小さめ文字（重なり軽減）
+  const n2 = renderWbgtGroup(mapRegion, wbgtGroups.pref, false);
+  if((wbgtGroups.national || wbgtGroups.pref) && (n1+n2) === 0){
+    console.warn('WBGTデータは取得済みですが地点ラベルを配置できませんでした。座標表を再取得します。');
+    amedasTable = null;
+    amedasTablePromise = null;
+    clearTimeout(wbgtRetryTimer);
+    wbgtRetryTimer = setTimeout(() => reloadWbgt(1), 800);
+  }
 }
 
 function renderWbgtLegend(){
@@ -648,9 +699,48 @@ function wxAspectFromFilename(name){
 function mercY(latDeg){ return Math.log(Math.tan(Math.PI/4 + latDeg*Math.PI/360)); }
 function invMercY(y){ return (2*Math.atan(Math.exp(y)) - Math.PI/2) * 180/Math.PI; }
 
+// 添付画面の気象庁天気図グリッドを使った幾何較正。
+//
+// 130/140/150/160°E の子午線は同一点（北極側）へ収束し、
+// 20/30/40/50°N はその点を中心とする同心円になる性質を利用。
+// 画面上で線を抽出し、共通中心と4本の半径を最小二乗で反復フィットした。
+// 元の WX_GEO に対する補正値として RMS < 1px になる値を初期値にする。
+const WX_TUNING_DEFAULT = {
+  scale: 1.1804,
+  shiftX: 0.026651,
+  shiftY: -0.144766
+};
+const WX_CALIBRATION_TARGET = {
+  // JCP600x581 の画像幅600px基準。較正後の極位置はほぼ (350, -335)px。
+  cu: 350 / 600,
+  cv: -335 / 600,
+  scale: 1.0088
+};
+
 function getWxTuning(){
   const g = (id, def) => { const el = document.getElementById(id); const v = el ? +el.value : NaN; return isNaN(v) ? def : v; };
-  return {scale: g('wxScale', 1.0), shiftX: g('wxShiftX', 0), shiftY: g('wxShiftY', 0)};
+  return {
+    scale: g('wxScale', WX_TUNING_DEFAULT.scale),
+    shiftX: g('wxShiftX', WX_TUNING_DEFAULT.shiftX),
+    shiftY: g('wxShiftY', WX_TUNING_DEFAULT.shiftY)
+  };
+}
+
+function projectionCalibrationErrorPx(g){
+  g = g || wxGeoTuned();
+  const W = 600;
+  const target = WX_CALIBRATION_TARGET;
+  const errs = [];
+  errs.push((g.cu - target.cu) * W);
+  errs.push((g.cv - target.cv) * W);
+  // 20/30/40/50N の半径誤差。標準緯度60°の球面ポーラーステレオ。
+  const k = 1 + Math.sin(g.latTs * Math.PI / 180);
+  const kt = 1 + Math.sin(60 * Math.PI / 180);
+  [20,30,40,50].forEach(lat => {
+    const q = Math.tan(Math.PI/4 - lat*Math.PI/360);
+    errs.push((g.scale*k - target.scale*kt) * q * W);
+  });
+  return Math.sqrt(errs.reduce((s,e)=>s+e*e,0) / errs.length);
 }
 
 // 画像を歪めないための肝：東西の幅を決めたら、南北の幅は
@@ -875,9 +965,10 @@ function updateTuneValueLabels(){
 }
 
 function resetWeatherMapTuning(){
-  document.getElementById('wxScale').value = 1.0;
-  document.getElementById('wxShiftX').value = 0;
-  document.getElementById('wxShiftY').value = 0;
+  document.getElementById('wxScale').value = WX_TUNING_DEFAULT.scale;
+  document.getElementById('wxShiftX').value = WX_TUNING_DEFAULT.shiftX;
+  document.getElementById('wxShiftY').value = WX_TUNING_DEFAULT.shiftY;
+  warpCache.clear();
   updateTuneValueLabels();
   rebuildJapanBase();
   updateOverlays();
@@ -1202,6 +1293,7 @@ function updateDebugLine(){
     `衛星タイル読込 ${himawariTileStats.loaded}件 / エラー ${himawariTileStats.error}件。` +
     wbgtInfo +
     `雨雲表示=${document.getElementById('radarMode').value}。` +
+    `天気図較正RMS=${projectionCalibrationErrorPx().toFixed(2)}px。 ` +
     `雨雲URL例: ${sample} / ひまわりURL例: ${satSample}`;
 }
 
@@ -1697,7 +1789,7 @@ async function reloadAll(){
     buildChart('chartRegion', regRows, `${reg.name}（1日前〜明日）`);
     fitJapanToWeatherMap();
     updateOverlays();
-    reloadWbgt(); // 暑さ指数は非同期で取得し、取得でき次第オーバーレイを更新します。
+    await reloadWbgt(); // 初期表示でもWBGTの座標取得と描画完了まで確認する。
   }catch(e){
     console.error(e); errorBox.textContent = 'データ取得に失敗しました。ローカルファイルとして直接開いている場合は、同じフォルダで `python3 -m http.server 8000` を実行し、http://localhost:8000/index.html で開いてください。\n\n' + e.message;
   }
@@ -1718,7 +1810,10 @@ document.addEventListener('DOMContentLoaded', () => {
   ['wxScale','wxShiftX','wxShiftY'].forEach(id => {
     document.getElementById(id).addEventListener('input', updateTuneValueLabels);
     document.getElementById(id).addEventListener('change', () => {
-      updateTuneValueLabels(); rebuildJapanBase(); updateOverlays();
+      warpCache.clear();
+      updateTuneValueLabels();
+      rebuildJapanBase();
+      updateOverlays();
     });
   });
   document.getElementById('cloud3dAutoToggle').addEventListener('change', () => {
