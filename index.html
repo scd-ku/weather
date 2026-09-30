@@ -366,6 +366,15 @@ async function loadWeatherMaps(){
     ...(near.ft24 || []),
     ...(near.ft48 || [])
   ].filter(Boolean);
+
+  // JCP600x581 のようなファイル名から比率を同期的に確定。
+  // initMaps() で先に作った背景地図と、その後に載るWBGT等が別比率になる競合を防ぎます。
+  const filenameAspect = files.map(wxAspectFromFilename).find(a => a && isFinite(a));
+  if(filenameAspect && setWxImageAspect(filenameAspect)){
+    warpCache.clear();
+    if(mapJapan) rebuildJapanBase();
+  }
+
   wxMaps = files.map(fn => {
     fn = Array.isArray(fn) ? fn[0] : fn;
     const m = String(fn).match(/_(\d{14})_MET/) || String(fn).match(/_(\d{14})_/);
@@ -614,9 +623,27 @@ const WX_PLACE = {
   centerLon: 136.1,
   halfLon: 32.14     // 倍率1.0のときの東西の半幅（度）
 };
-let wxImageAspect = 0.84;      // 画像の 高さ/幅（実画像から判明したら更新）
-let wxAspectKnown = false;
+// 気象庁の日本周辺域天気図（SPAS）は現在 JCP600x581。
+// 初回描画から実画像と同じ比率を使い、背景地図・WBGT・レーダーの投影ずれを防ぎます。
+const WX_DEFAULT_IMAGE_ASPECT = 581 / 600;
+let wxImageAspect = WX_DEFAULT_IMAGE_ASPECT; // 画像の 高さ/幅
+let wxAspectKnown = true;
 const wxAspectCache = new Map();
+
+function setWxImageAspect(a){
+  if(!(a > 0) || !isFinite(a)) return false;
+  const changed = Math.abs(a - wxImageAspect) > 1e-6;
+  wxImageAspect = a;
+  wxAspectKnown = true;
+  return changed;
+}
+
+function wxAspectFromFilename(name){
+  const m = String(name || '').match(/JCP(\d+)x(\d+)/i);
+  if(!m) return null;
+  const w = +m[1], h = +m[2];
+  return (w > 0 && h > 0) ? h / w : null;
+}
 
 function mercY(latDeg){ return Math.log(Math.tan(Math.PI/4 + latDeg*Math.PI/360)); }
 function invMercY(y){ return (2*Math.atan(Math.exp(y)) - Math.PI/2) * 180/Math.PI; }
@@ -629,14 +656,16 @@ function getWxTuning(){
 // 画像を歪めないための肝：東西の幅を決めたら、南北の幅は
 // 「メルカトル平面上で画像のアスペクト比と同じになる」ように計算します。
 function getWeatherMapBounds(){
-  const t = getWxTuning();
-  const halfLon = WX_PLACE.halfLon / t.scale;
-  const cLon = WX_PLACE.centerLon + t.shiftX;
-  const cLat = WX_PLACE.centerLat + t.shiftY;
+  // ここは天気図画像を無歪みで置くための「表示用の固定矩形」だけを決めます。
+  // 地図の合わせ（倍率・東西・南北）は wxGeoTuned() 側だけに適用します。
+  // 両方へ適用すると補正が二重になり、特に高緯度側で誤差が増幅します。
+  const halfLon = WX_PLACE.halfLon;
+  const cLon = WX_PLACE.centerLon;
+  const cLat = WX_PLACE.centerLat;
   const lonW = cLon - halfLon, lonE = cLon + halfLon;
   // メルカトルではx∝経度なので、x方向の広がり（ラジアン）から必要なy方向の広がりを出します。
   const xSpan = (lonE - lonW) * Math.PI/180;
-  const ySpan = xSpan * wxImageAspect;          // ← これで画像は無歪み
+  const ySpan = xSpan * wxImageAspect;
   const yC = mercY(cLat);
   const latN = invMercY(yC + ySpan/2);
   const latS = invMercY(yC - ySpan/2);
@@ -651,10 +680,7 @@ function ensureWxAspect(url){
     img.onload = () => {
       const w = img.naturalWidth || img.width, h = img.naturalHeight || img.height;
       if(w && h){
-        const a = h / w;
-        const changed = !wxAspectKnown || Math.abs(a - wxImageAspect) > 1e-6;
-        wxImageAspect = a; wxAspectKnown = true;
-        resolve(changed);
+        resolve(setWxImageAspect(h / w));
       }else resolve(false);
     };
     img.onerror = () => resolve(false);
@@ -673,6 +699,8 @@ const WARP_OUT_W = 1100;
 
 function wxGeoTuned(){
   const t = getWxTuning();
+  // 補正は天気図画像上の再投影座標だけに適用する。
+  // shiftX/shiftY は画像幅を1とした等方座標、scale は投影半径の倍率。
   return {lon0:WX_GEO.lon0, latTs:WX_GEO.latTs,
           cu:WX_GEO.cu + t.shiftX, cv:WX_GEO.cv + t.shiftY, scale:WX_GEO.scale * t.scale};
 }
@@ -969,9 +997,14 @@ function addWxMap(map, item){
   ensureWxAspect(item.url).then(changed => {
     if(!wxLayers.includes(layer)) return; // 既に時刻が変わって破棄済み
     if(changed){
-      applyMapAspect(); // 地図ボックスの縦横比を天気図に合わせる
+      // 比率が変わった場合、天気図だけでなく再投影済み背景と地点ラベルも同じ比率で作り直します。
+      warpCache.clear();
+      applyMapAspect();
       wxLayers.forEach(l => { try{ l.setBounds(L.latLngBounds(getWeatherMapBounds())); }catch(e){} });
-      fitJapanToWeatherMap({force:true}); // 天気図の実寸に合わせて表示範囲を取り直す
+      rebuildJapanBase();
+      fitJapanToWeatherMap({force:true});
+      // 現在のレーダー・衛星・観測点・WBGTも旧比率のまま残さない。
+      setTimeout(() => updateOverlays(), 0);
     }
   });
 }
