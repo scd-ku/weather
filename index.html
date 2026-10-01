@@ -170,8 +170,8 @@
         <label>天気図透明度 <input id="wxOpacity" type="range" min="0" max="1" step="0.05" value="0.34"></label>
         <span class="advNote">天気図は加工せず基準にし、地図・雨雲・衛星・暑さ指数を天気図の図法へ再投影して重ねています。輪郭がずれる場合はここで合わせてください：</span>
         <label>地図の合わせ 倍率 <span id="wxScaleVal" class="value">1.139</span><input id="wxScale" type="range" min="0.85" max="1.35" step="0.001" value="1.139"></label>
-        <label>東西 <span id="wxShiftXVal" class="value">0.017</span><input id="wxShiftX" type="range" min="-0.20" max="0.20" step="0.001" value="0.017"></label>
-        <label>南北 <span id="wxShiftYVal" class="value">-0.060</span><input id="wxShiftY" type="range" min="-0.20" max="0.20" step="0.001" value="-0.060"></label>
+        <label>東西 <span id="wxShiftXVal" class="value">0.018</span><input id="wxShiftX" type="range" min="-0.20" max="0.20" step="0.001" value="0.018"></label>
+        <label>南北 <span id="wxShiftYVal" class="value">-0.058</span><input id="wxShiftY" type="range" min="-0.20" max="0.20" step="0.001" value="-0.058"></label>
         <button id="wxResetBtn" type="button" class="smallBtn">天気図位置リセット</button>
       </div>
     </details>
@@ -727,8 +727,8 @@ function invMercY(y){ return (2*Math.atan(Math.exp(y)) - Math.PI/2) * 180/Math.P
 // 元の WX_GEO に対する補正値として RMS < 1px になる値を初期値にする。
 const WX_TUNING_DEFAULT = {
   scale: 1.139,
-  shiftX: 0.017,
-  shiftY: -0.060
+  shiftX: 0.018,
+  shiftY: -0.058
 };
 const WX_CALIBRATION_TARGET = {
   // JCP600x581 の画像幅600px基準。較正後の極位置はほぼ (350, -335)px。
