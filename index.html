@@ -338,6 +338,13 @@ function initMaps(){
   L.tileLayer(base, {maxZoom:18, attribution:'地理院タイル'}).addTo(mapRegion);
   mapJapan.attributionControl.addAttribution('地理院タイル, 気象庁');
   rebuildJapanBase();
+
+  let regionWxMoveTimer = null;
+  mapRegion.on('moveend', () => {
+    if(!timeRows.length || !document.getElementById('chartToggle')?.checked) return;
+    clearTimeout(regionWxMoveTimer);
+    regionWxMoveTimer = setTimeout(() => updateOverlays(), 180);
+  });
 }
 
 async function fetchJson(url){
@@ -559,7 +566,7 @@ async function reloadWbgt(retryCount=0){
   await Promise.allSettled(jobs);
 
   // APIやCORSの一時失敗時は自動で再取得する。既に取得できた側は保持して表示する。
-  updateWbgtOverlay();
+  repaintWbgtStable();
   updateDebugLine();
 
   if(!wbgtGroups.national && !wbgtGroups.pref && retryCount < 2){
@@ -613,6 +620,19 @@ function updateWbgtOverlay(){
     clearTimeout(wbgtRetryTimer);
     wbgtRetryTimer = setTimeout(() => reloadWbgt(1), 800);
   }
+}
+
+function repaintWbgtStable(){
+  // 初期起動直後はLeafletのサイズ確定・非同期レイヤー追加とWBGT取得完了が競合することがある。
+  // データ取得後に即時＋次フレーム＋少し遅延の3回だけ描画し、チェックOFF/ON不要にする。
+  const paint = () => {
+    if(mapJapan) mapJapan.invalidateSize(false);
+    if(mapRegion) mapRegion.invalidateSize(false);
+    updateWbgtOverlay();
+  };
+  paint();
+  requestAnimationFrame(() => requestAnimationFrame(paint));
+  setTimeout(paint, 220);
 }
 
 function renderWbgtLegend(){
@@ -906,6 +926,11 @@ function warpMosaicToChart(mos, outW){
 
 const warpCache = new Map();
 const warpInflight = new Map();
+
+// 右側の地域地図は通常のWebメルカトルなので、天気図（ポーラーステレオ）を
+// そのまま矩形貼りしてはいけない。現在の地域表示範囲へ逆投影してから重ねる。
+const wxRegionWarpCache = new Map();
+let wxRegionWarpGeneration = 0;
 function warpKey(name, extra){
   const t = getWxTuning();
   return `${name}|${extra}|${t.scale}|${t.shiftX}|${t.shiftY}|${wxImageAspect.toFixed(4)}`;
@@ -969,6 +994,7 @@ function resetWeatherMapTuning(){
   document.getElementById('wxShiftX').value = WX_TUNING_DEFAULT.shiftX;
   document.getElementById('wxShiftY').value = WX_TUNING_DEFAULT.shiftY;
   warpCache.clear();
+  wxRegionWarpCache.clear();
   updateTuneValueLabels();
   rebuildJapanBase();
   updateOverlays();
@@ -1077,9 +1103,131 @@ function addRadar(map, time){
   }
 }
 
-// 天気図は加工せずそのまま貼ります。画像の縦横比が分かった時点で、
-// 無歪みになるよう配置範囲を計算し直します。
-function addWxMap(map, item){
+// 右側の地域地図用：天気図画像（ポーラーステレオ）をWebメルカトルへ再投影する。
+// 出力キャンバスのxは経度、yはWebメルカトルYに等間隔なので、LeafletのimageOverlayに
+// 通常の緯度経度Boundsで載せれば地理院地図・雨雲・衛星と一致する。
+function regionWarpBounds(map){
+  const b = map.getBounds();
+  // 現在表示範囲より少し広く作り、多少のパンでも端が見えにくくする。
+  const lonPad = Math.max(0.8, (b.getEast() - b.getWest()) * 0.22);
+  const latPad = Math.max(0.6, (b.getNorth() - b.getSouth()) * 0.22);
+  return {
+    lonW: Math.max(90, b.getWest() - lonPad),
+    lonE: Math.min(180, b.getEast() + lonPad),
+    latS: Math.max(-70, b.getSouth() - latPad),
+    latN: Math.min(75, b.getNorth() + latPad)
+  };
+}
+
+function regionWarpKey(url, bbox){
+  const g = wxGeoTuned();
+  return [
+    url,
+    bbox.lonW.toFixed(3), bbox.lonE.toFixed(3),
+    bbox.latS.toFixed(3), bbox.latN.toFixed(3),
+    g.lon0.toFixed(4), g.cu.toFixed(6), g.cv.toFixed(6), g.scale.toFixed(6),
+    wxImageAspect.toFixed(6)
+  ].join('|');
+}
+
+async function warpWeatherChartToMercator(url, bbox, outW=1200){
+  const key = regionWarpKey(url, bbox);
+  if(wxRegionWarpCache.has(key)) return wxRegionWarpCache.get(key);
+
+  const job = (async () => {
+    const img = await loadImageForCanvas(url);
+    const sw = img.naturalWidth || img.width;
+    const sh = img.naturalHeight || img.height;
+    if(!sw || !sh) throw new Error('天気図画像サイズを取得できません');
+
+    // 実画像の縦横比を最終確認。
+    setWxImageAspect(sh / sw);
+
+    const srcCanvas = document.createElement('canvas');
+    srcCanvas.width = sw;
+    srcCanvas.height = sh;
+    const sctx = srcCanvas.getContext('2d', {willReadFrequently:true});
+    sctx.drawImage(img, 0, 0);
+    const src = sctx.getImageData(0, 0, sw, sh).data;
+
+    const xSpan = (bbox.lonE - bbox.lonW) * Math.PI / 180;
+    const yN = mercY(bbox.latN), yS = mercY(bbox.latS);
+    const outH = Math.max(320, Math.min(1600, Math.round(outW * (yN - yS) / Math.max(1e-6, xSpan))));
+
+    const out = document.createElement('canvas');
+    out.width = outW;
+    out.height = outH;
+    const octx = out.getContext('2d');
+    const od = octx.createImageData(outW, outH);
+    const dst = od.data;
+    const g = wxGeoTuned();
+    const aspect = sh / sw;
+
+    for(let py=0; py<outH; py++){
+      const my = yN - ((py + 0.5) / outH) * (yN - yS);
+      const lat = invMercY(my);
+      const row = py * outW * 4;
+      for(let px=0; px<outW; px++){
+        const lon = bbox.lonW + ((px + 0.5) / outW) * (bbox.lonE - bbox.lonW);
+        const p = wxProjectToImage(lat, lon, g, aspect);
+        if(p.u < 0 || p.u >= 1 || p.v < 0 || p.v >= 1) continue;
+
+        // 近傍画素。線・文字をぼかし過ぎず、位置精度を優先する。
+        const sx = Math.max(0, Math.min(sw - 1, Math.round(p.u * (sw - 1))));
+        const sy = Math.max(0, Math.min(sh - 1, Math.round(p.v * (sh - 1))));
+        const si = (sy * sw + sx) * 4;
+        const di = row + px * 4;
+        dst[di] = src[si];
+        dst[di+1] = src[si+1];
+        dst[di+2] = src[si+2];
+        dst[di+3] = src[si+3];
+      }
+    }
+    octx.putImageData(od, 0, 0);
+    return {
+      url: out.toDataURL('image/png'),
+      bounds: [[bbox.latS, bbox.lonW], [bbox.latN, bbox.lonE]]
+    };
+  })();
+
+  wxRegionWarpCache.set(key, job);
+  // キャッシュが増え過ぎないよう最新数件だけ残す。
+  if(wxRegionWarpCache.size > 8){
+    const first = wxRegionWarpCache.keys().next().value;
+    if(first && first !== key) wxRegionWarpCache.delete(first);
+  }
+  return job;
+}
+
+async function addWxMapRegion(item, generation){
+  const bbox = regionWarpBounds(mapRegion);
+  try{
+    const warped = await warpWeatherChartToMercator(item.url, bbox, 1200);
+    if(generation !== wxRegionWarpGeneration) return; // 時刻・設定変更後の古い結果は捨てる
+    if(!document.getElementById('chartToggle').checked) return;
+
+    const layer = L.imageOverlay(warped.url, warped.bounds, {
+      opacity:+document.getElementById('wxOpacity').value,
+      interactive:false,
+      zIndex:450,
+      pane:'wxPane'
+    }).addTo(mapRegion);
+    wxLayers.push(layer);
+  }catch(e){
+    console.warn('地域地図の天気図再投影に失敗:', e);
+    // CORS等で画素取得できない場合も、誤った矩形貼りには戻さない。
+    // 地理院地図・雨雲・衛星の位置関係を壊さず、天気図だけ非表示にする。
+  }
+}
+
+// 左の日本全土は天気図画像そのものを基準にし、右の地域地図はWebメルカトルへ再投影する。
+function addWxMap(map, item, generation){
+  if(map === mapRegion){
+    addWxMapRegion(item, generation);
+    return;
+  }
+
+  // 日本全土は天気図を基準画像として無加工で表示。
   const layer = L.imageOverlay(item.url, getWeatherMapBounds(), {
     opacity:+document.getElementById('wxOpacity').value,
     interactive:false,
@@ -1087,16 +1235,17 @@ function addWxMap(map, item){
     pane:'wxPane'
   }).addTo(map);
   wxLayers.push(layer);
+
   ensureWxAspect(item.url).then(changed => {
-    if(!wxLayers.includes(layer)) return; // 既に時刻が変わって破棄済み
+    if(!wxLayers.includes(layer)) return;
     if(changed){
-      // 比率が変わった場合、天気図だけでなく再投影済み背景と地点ラベルも同じ比率で作り直します。
       warpCache.clear();
+      wxRegionWarpCache.clear();
       applyMapAspect();
-      wxLayers.forEach(l => { try{ l.setBounds(L.latLngBounds(getWeatherMapBounds())); }catch(e){} });
+      layer.setBounds(L.latLngBounds(getWeatherMapBounds()));
       rebuildJapanBase();
       fitJapanToWeatherMap({force:true});
-      // 現在のレーダー・衛星・観測点・WBGTも旧比率のまま残さない。
+      // 実画像比率が変わった場合だけ、全レイヤーを新しい比率で作り直す。
       setTimeout(() => updateOverlays(), 0);
     }
   });
@@ -1136,6 +1285,7 @@ function updateOverlays(){
   const row = timeRows[selectedIndex];
   const t = row.date;
   document.getElementById('selectedTime').textContent = fmtTime(t);
+  const wxGeneration = ++wxRegionWarpGeneration;
   clearLayerArray(rainLayers); clearLayerArray(wxLayers); clearLayerArray(himawariLayers);
   radarTileStats = {loaded:0, error:0};
   himawariTileStats = {loaded:0, error:0};
@@ -1146,7 +1296,10 @@ function updateOverlays(){
   if(sat && (document.getElementById('himawariVisibleToggle').checked || document.getElementById('himawariCloudTopToggle').checked)){
     addHimawariLayers(mapJapan, sat); addHimawariLayers(mapRegion, sat);
   }
-  if(document.getElementById('chartToggle').checked && wx){ addWxMap(mapJapan, wx); addWxMap(mapRegion, wx); }
+  if(document.getElementById('chartToggle').checked && wx){
+    addWxMap(mapJapan, wx, wxGeneration);
+    addWxMap(mapRegion, wx, wxGeneration);
+  }
   if(document.getElementById('rainToggle').checked && nowc){ addRadar(mapJapan, nowc); addRadar(mapRegion, nowc); }
   updateObservationPoints();
   updateWbgtOverlay();
@@ -1790,6 +1943,7 @@ async function reloadAll(){
     fitJapanToWeatherMap();
     updateOverlays();
     await reloadWbgt(); // 初期表示でもWBGTの座標取得と描画完了まで確認する。
+    repaintWbgtStable();
   }catch(e){
     console.error(e); errorBox.textContent = 'データ取得に失敗しました。ローカルファイルとして直接開いている場合は、同じフォルダで `python3 -m http.server 8000` を実行し、http://localhost:8000/index.html で開いてください。\n\n' + e.message;
   }
@@ -1811,6 +1965,7 @@ document.addEventListener('DOMContentLoaded', () => {
     document.getElementById(id).addEventListener('input', updateTuneValueLabels);
     document.getElementById(id).addEventListener('change', () => {
       warpCache.clear();
+      wxRegionWarpCache.clear();
       updateTuneValueLabels();
       rebuildJapanBase();
       updateOverlays();
