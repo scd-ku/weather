@@ -1139,21 +1139,29 @@ function addWarpedRadarSvgOverlay(map, opt){
     const af = affineFromTriangles(s0,s1,s2,d0,d1,d2);
     if(!af) return;
 
+    // clipPath は「元タイル座標」で作る。
+    // その後 group 全体へ affine transform を掛けることで、
+    // 画像とクリップ領域を必ず同じ変換にする。
+    // 以前は destination 座標で clip してから use 自体も transform していたため、
+    // Chrome では clip が二重変換され、ほぼ全域が切り落とされていた。
     const clipId = `${overlayId}-clip-${clipNo++}`;
     const cp = document.createElementNS(NS, 'clipPath');
     cp.setAttribute('id', clipId);
     cp.setAttribute('clipPathUnits', 'userSpaceOnUse');
     const poly = document.createElementNS(NS, 'polygon');
-    poly.setAttribute('points', `${d0.x},${d0.y} ${d1.x},${d1.y} ${d2.x},${d2.y}`);
+    poly.setAttribute('points', `${s0.x},${s0.y} ${s1.x},${s1.y} ${s2.x},${s2.y}`);
     cp.appendChild(poly);
     defs.appendChild(cp);
+
+    const g = document.createElementNS(NS, 'g');
+    g.setAttribute('transform', `matrix(${af.a} ${af.b} ${af.c} ${af.d} ${af.e} ${af.f})`);
 
     const use = document.createElementNS(NS, 'use');
     use.setAttribute('href', '#' + tileId);
     use.setAttributeNS(XLINK, 'xlink:href', '#' + tileId);
-    use.setAttribute('transform', `matrix(${af.a} ${af.b} ${af.c} ${af.d} ${af.e} ${af.f})`);
     use.setAttribute('clip-path', `url(#${clipId})`);
-    svg.appendChild(use);
+    g.appendChild(use);
+    svg.appendChild(g);
   };
 
   let tileNo = 0;
@@ -1168,6 +1176,15 @@ function addWarpedRadarSvgOverlay(map, opt){
       const url = opt.tileUrl(z,tx,ty);
       img.setAttribute('href', url);
       img.setAttributeNS(XLINK, 'xlink:href', url);
+      img.addEventListener('load', () => {
+        radarTileStats.loaded++;
+        updateDebugLine();
+      }, {once:true});
+      img.addEventListener('error', () => {
+        radarTileStats.error++;
+        console.warn('雨雲SVGタイル読込失敗:', url);
+        updateDebugLine();
+      }, {once:true});
       defs.appendChild(img);
 
       for(let sy=0; sy<SUB; sy++){
@@ -1205,7 +1222,6 @@ function addOneRadarLayer(map, time, element, paneName, opacity, zIndex){
         z:5, pane:paneName, zIndex, opacity, store:rainLayers,
         tileUrl:(z,x,y) => url.replace('{z}', z).replace('{x}', x).replace('{y}', y)
       });
-      radarTileStats.loaded++;
     }catch(e){
       radarTileStats.error++;
       console.warn('日本全土の雨雲SVG再投影に失敗:', e);
@@ -1584,7 +1600,7 @@ function updateDebugLine(){
   const wbgtInfo = `暑さ指数：全国県庁所在地 ${natN}地点${wbgtStatus.national?'（'+wbgtStatus.national+'）':''} / 県内 ${prefN}地点${wbgtStatus.pref?'（'+wbgtStatus.pref+'）':''}。`;
   document.getElementById('debugBox').textContent =
     `取得：雨雲レーダー ${nowcTimes.length}件、天気図 ${wxMaps.length}件、ひまわり ${himawariTimes.length}件。` +
-    `雨雲タイル読込 ${radarTileStats.loaded}件 / エラー ${radarTileStats.error}件。` +
+    `雨雲タイル読込 ${radarTileStats.loaded}件 / エラー ${radarTileStats.error}件（全国SVG＋地域）。` +
     `衛星タイル読込 ${himawariTileStats.loaded}件 / エラー ${himawariTileStats.error}件。` +
     wbgtInfo +
     `雨雲表示=${document.getElementById('radarMode').value}。` +
