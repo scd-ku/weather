@@ -1044,7 +1044,12 @@ function forceMapAndOverlayRefresh(){
   const maps = [mapJapan, mapRegion].filter(Boolean);
   const refresh = () => {
     maps.forEach(m => m.invalidateSize(true));
-    rainLayers.forEach(l => { try{ l.redraw(); }catch(e){} });
+    rainLayers.forEach(l => {
+      try{
+        if(typeof l.redraw === 'function') l.redraw();
+        else if(typeof l.setBounds === 'function' && l.getElement?.()?.tagName?.toLowerCase() === 'svg') l.setBounds(getWeatherMapBounds());
+      }catch(e){}
+    });
     himawariLayers.forEach(l => { try{ l.redraw(); }catch(e){} });
   };
   refresh();
@@ -1060,15 +1065,150 @@ function makeNowcTileUrl(time, element){
     .replace('{element}', element);
 }
 
+// 気象庁雨雲タイルは <img> としては表示できても、Canvas の getImageData が
+// CORS 制約で失敗することがある。日本全土側は画素を読まず、SVG 内で各タイルを
+// 小さな三角形へ分割し、各三角形をアフィン変換して天気図図法へ近似再投影する。
+// これにより JMA タイルをそのままブラウザに描画させつつ、天気図と位置を合わせられる。
+function tilePixelToLonLat(tileX, tileY, px, py, z){
+  const n = Math.pow(2, z);
+  const gx = tileX + px / 256;
+  const gy = tileY + py / 256;
+  const lon = gx / n * 360 - 180;
+  const latRad = Math.atan(Math.sinh(Math.PI * (1 - 2 * gy / n)));
+  return {lon, lat: latRad * 180 / Math.PI};
+}
+
+function affineFromTriangles(s0, s1, s2, d0, d1, d2){
+  const x0=s0.x, y0=s0.y, x1=s1.x, y1=s1.y, x2=s2.x, y2=s2.y;
+  const det = x0*(y1-y2) + x1*(y2-y0) + x2*(y0-y1);
+  if(Math.abs(det) < 1e-9) return null;
+
+  // Solve x' = a*x + c*y + e and y' = b*x + d*y + f.
+  const solve = (v0,v1,v2) => ({
+    p: (v0*(y1-y2) + v1*(y2-y0) + v2*(y0-y1)) / det,
+    q: (v0*(x2-x1) + v1*(x0-x2) + v2*(x1-x0)) / det,
+    r: (v0*(x1*y2-x2*y1) + v1*(x2*y0-x0*y2) + v2*(x0*y1-x1*y0)) / det
+  });
+  const X = solve(d0.x,d1.x,d2.x);
+  const Y = solve(d0.y,d1.y,d2.y);
+  return {a:X.p, b:Y.p, c:X.q, d:Y.q, e:X.r, f:Y.r};
+}
+
+function radarTargetPixel(tileX, tileY, px, py, z, outW, outH){
+  const ll = tilePixelToLonLat(tileX, tileY, px, py, z);
+  const p = wxProjectToImage(ll.lat, ll.lon, wxGeoTuned(), wxImageAspect);
+  return {x:p.u*outW, y:p.v*outH};
+}
+
+function radarTileRange(z){
+  // 全国表示で必要な範囲に限定。日本列島と周辺の降水域を十分含める。
+  const bbox = {latS:15, latN:55, lonW:112, lonE:162};
+  const nw = lonLatToTileXY(bbox.lonW, bbox.latN, z);
+  const se = lonLatToTileXY(bbox.lonE, bbox.latS, z);
+  return {
+    minX:Math.min(nw.x,se.x), maxX:Math.max(nw.x,se.x),
+    minY:Math.min(nw.y,se.y), maxY:Math.max(nw.y,se.y)
+  };
+}
+
+function addWarpedRadarSvgOverlay(map, opt){
+  const NS = 'http://www.w3.org/2000/svg';
+  const XLINK = 'http://www.w3.org/1999/xlink';
+  const outW = WARP_OUT_W;
+  const outH = Math.max(1, Math.round(outW * wxImageAspect));
+  const svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${outW} ${outH}`);
+  svg.setAttribute('preserveAspectRatio', 'none');
+  svg.style.overflow = 'hidden';
+  if(opt.pane === 'rainPane' && document.getElementById('rainEnhance')?.checked){
+    svg.style.filter = 'saturate(2.8) contrast(2.2) brightness(1.08)';
+  }else if(opt.pane === 'rainNDPane'){
+    svg.style.filter = 'contrast(1.15) brightness(1.05)';
+  }
+
+  const defs = document.createElementNS(NS, 'defs');
+  svg.appendChild(defs);
+  const z = opt.z || 5;
+  const range = radarTileRange(z);
+  const SUB = 4; // 1タイルを4x4セル、32三角形へ。全国表示で十分滑らか。
+  let clipNo = 0;
+
+  const makeUse = (tileId, s0,s1,s2,d0,d1,d2) => {
+    const af = affineFromTriangles(s0,s1,s2,d0,d1,d2);
+    if(!af) return;
+
+    const clipId = `radarClip-${Date.now().toString(36)}-${clipNo++}`;
+    const cp = document.createElementNS(NS, 'clipPath');
+    cp.setAttribute('id', clipId);
+    cp.setAttribute('clipPathUnits', 'userSpaceOnUse');
+    const poly = document.createElementNS(NS, 'polygon');
+    poly.setAttribute('points', `${d0.x},${d0.y} ${d1.x},${d1.y} ${d2.x},${d2.y}`);
+    cp.appendChild(poly);
+    defs.appendChild(cp);
+
+    const use = document.createElementNS(NS, 'use');
+    use.setAttribute('href', '#' + tileId);
+    use.setAttributeNS(XLINK, 'xlink:href', '#' + tileId);
+    use.setAttribute('transform', `matrix(${af.a} ${af.b} ${af.c} ${af.d} ${af.e} ${af.f})`);
+    use.setAttribute('clip-path', `url(#${clipId})`);
+    svg.appendChild(use);
+  };
+
+  let tileNo = 0;
+  for(let ty=range.minY; ty<=range.maxY; ty++){
+    for(let tx=range.minX; tx<=range.maxX; tx++){
+      const tileId = `radarTile-${Date.now().toString(36)}-${tileNo++}`;
+      const img = document.createElementNS(NS, 'image');
+      img.setAttribute('id', tileId);
+      img.setAttribute('x','0'); img.setAttribute('y','0');
+      img.setAttribute('width','256'); img.setAttribute('height','256');
+      img.setAttribute('preserveAspectRatio','none');
+      const url = opt.tileUrl(z,tx,ty);
+      img.setAttribute('href', url);
+      img.setAttributeNS(XLINK, 'xlink:href', url);
+      defs.appendChild(img);
+
+      for(let sy=0; sy<SUB; sy++){
+        for(let sx=0; sx<SUB; sx++){
+          const x0=sx*256/SUB, x1=(sx+1)*256/SUB;
+          const y0=sy*256/SUB, y1=(sy+1)*256/SUB;
+          const A={x:x0,y:y0}, B={x:x1,y:y0}, C={x:x0,y:y1}, D={x:x1,y:y1};
+          const a=radarTargetPixel(tx,ty,x0,y0,z,outW,outH);
+          const b=radarTargetPixel(tx,ty,x1,y0,z,outW,outH);
+          const cc=radarTargetPixel(tx,ty,x0,y1,z,outW,outH);
+          const d=radarTargetPixel(tx,ty,x1,y1,z,outW,outH);
+          makeUse(tileId,A,B,C,a,b,cc);
+          makeUse(tileId,D,C,B,d,cc,b);
+        }
+      }
+    }
+  }
+
+  const layer = L.svgOverlay(svg, getWeatherMapBounds(), {
+    opacity:opt.opacity,
+    interactive:false,
+    pane:opt.pane,
+    zIndex:opt.zIndex
+  }).addTo(map);
+  opt.store.push(layer);
+  return layer;
+}
+
 function addOneRadarLayer(map, time, element, paneName, opacity, zIndex){
   const url = makeNowcTileUrl(time, element);
   if(map === mapJapan){
-    // 日本全土は天気図の図法に再投影して重ねます
-    addWarpedOverlay(map, {
-      name:'radar', extra:`${element}|${time.base}|${time.valid}`, z:5,
-      pane:paneName, zIndex, opacity, store:rainLayers,
-      tileUrl:(z,x,y) => url.replace('{z}', z).replace('{x}', x).replace('{y}', y)
-    }).then(() => { radarTileStats.loaded++; updateDebugLine(); });
+    // Canvas画素読み取りを使わないSVG三角形ワープ。JMAタイルのCORS制約でも表示できる。
+    try{
+      addWarpedRadarSvgOverlay(map, {
+        z:5, pane:paneName, zIndex, opacity, store:rainLayers,
+        tileUrl:(z,x,y) => url.replace('{z}', z).replace('{x}', x).replace('{y}', y)
+      });
+      radarTileStats.loaded++;
+    }catch(e){
+      radarTileStats.error++;
+      console.warn('日本全土の雨雲SVG再投影に失敗:', e);
+    }
+    updateDebugLine();
     return;
   }
   const layer = L.tileLayer(url, {
