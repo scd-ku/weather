@@ -1044,12 +1044,7 @@ function forceMapAndOverlayRefresh(){
   const maps = [mapJapan, mapRegion].filter(Boolean);
   const refresh = () => {
     maps.forEach(m => m.invalidateSize(true));
-    rainLayers.forEach(l => {
-      try{
-        if(typeof l.redraw === 'function') l.redraw();
-        else if(typeof l.setBounds === 'function' && l.getElement?.()?.tagName?.toLowerCase() === 'svg') l.setBounds(getWeatherMapBounds());
-      }catch(e){}
-    });
+    rainLayers.forEach(l => { try{ if(typeof l.redraw === 'function') l.redraw(); }catch(e){} });
     himawariLayers.forEach(l => { try{ l.redraw(); }catch(e){} });
   };
   refresh();
@@ -1109,6 +1104,154 @@ function radarTileRange(z){
     minX:Math.min(nw.x,se.x), maxX:Math.max(nw.x,se.x),
     minY:Math.min(nw.y,se.y), maxY:Math.max(nw.y,se.y)
   };
+}
+
+// ===== 日本全土用・CORS非依存の雨雲再投影 =====
+// SVG <image>/<use> は Chrome で外部JMA画像の描画が不安定だったため、
+// 通常の HTML <img> を使い、元タイル座標で clip-path した三角形を
+// CSS matrix() で天気図座標へ変形する。<img> としての読み込みは右側の
+// Leafletタイルと同じ経路なので、Canvas/SVGのCORS制約を受けない。
+let radarCssOverlaySeq = 0;
+
+function addWarpedRadarCssOverlay(map, opt){
+  const pane = map.getPane(opt.pane);
+  if(!pane) throw new Error('雨雲表示用paneがありません: ' + opt.pane);
+
+  const overlayId = 'radarCssWarp' + (++radarCssOverlaySeq);
+  const outW = WARP_OUT_W;
+  const outH = Math.max(1, Math.round(outW * wxImageAspect));
+  const z = opt.z || 5;
+  const range = radarTileRange(z);
+  const SUB = 4;
+
+  const host = document.createElement('div');
+  host.className = 'radar-css-warp';
+  host.dataset.radarOverlayId = overlayId;
+  host.style.position = 'absolute';
+  host.style.left = '0';
+  host.style.top = '0';
+  host.style.pointerEvents = 'none';
+  host.style.opacity = String(opt.opacity == null ? 1 : opt.opacity);
+  host.style.overflow = 'hidden';
+  host.style.willChange = 'transform,width,height';
+
+  const inner = document.createElement('div');
+  inner.style.position = 'absolute';
+  inner.style.left = '0';
+  inner.style.top = '0';
+  inner.style.width = outW + 'px';
+  inner.style.height = outH + 'px';
+  inner.style.transformOrigin = '0 0';
+  inner.style.pointerEvents = 'none';
+  host.appendChild(inner);
+  pane.appendChild(host);
+
+  // 強調はSVGではなく各HTML画像を含む親要素へ適用。
+  if(opt.pane === 'rainPane' && document.getElementById('rainEnhance')?.checked){
+    inner.style.filter = 'saturate(2.8) contrast(2.2) brightness(1.08)';
+  }else if(opt.pane === 'rainNDPane'){
+    inner.style.filter = 'contrast(1.15) brightness(1.05)';
+  }
+
+  const createdUrls = new Set();
+  let successfulTiles = 0;
+  let failedTiles = 0;
+
+  const addTriangle = (url, s0,s1,s2,d0,d1,d2) => {
+    const af = affineFromTriangles(s0,s1,s2,d0,d1,d2);
+    if(!af) return;
+
+    const img = document.createElement('img');
+    img.src = url;
+    img.alt = '';
+    img.draggable = false;
+    img.decoding = 'async';
+    img.style.position = 'absolute';
+    img.style.left = '0';
+    img.style.top = '0';
+    img.style.width = '256px';
+    img.style.height = '256px';
+    img.style.maxWidth = 'none';
+    img.style.transformOrigin = '0 0';
+    img.style.transform = `matrix(${af.a},${af.b},${af.c},${af.d},${af.e},${af.f})`;
+    img.style.clipPath = `polygon(${s0.x}px ${s0.y}px, ${s1.x}px ${s1.y}px, ${s2.x}px ${s2.y}px)`;
+    img.style.webkitClipPath = img.style.clipPath;
+    img.style.pointerEvents = 'none';
+
+    // 同URLは多数の三角形で使うため、成功/失敗カウントはURLごとに1回だけ。
+    if(!createdUrls.has(url)){
+      createdUrls.add(url);
+      img.addEventListener('load', () => {
+        successfulTiles++;
+        radarTileStats.loaded++;
+        updateDebugLine();
+      }, {once:true});
+      img.addEventListener('error', () => {
+        // JMAは「描画内容がないタイル」を404にすることがあるため、
+        // これは通常動作として静かに数える。大量console.warnは出さない。
+        failedTiles++;
+        radarTileStats.error++;
+        updateDebugLine();
+      }, {once:true});
+    }
+    inner.appendChild(img);
+  };
+
+  for(let ty=range.minY; ty<=range.maxY; ty++){
+    for(let tx=range.minX; tx<=range.maxX; tx++){
+      const url = opt.tileUrl(z,tx,ty);
+      for(let sy=0; sy<SUB; sy++){
+        for(let sx=0; sx<SUB; sx++){
+          const x0=sx*256/SUB, x1=(sx+1)*256/SUB;
+          const y0=sy*256/SUB, y1=(sy+1)*256/SUB;
+          const A={x:x0,y:y0}, B={x:x1,y:y0}, C={x:x0,y:y1}, D={x:x1,y:y1};
+          const a=radarTargetPixel(tx,ty,x0,y0,z,outW,outH);
+          const b=radarTargetPixel(tx,ty,x1,y0,z,outW,outH);
+          const cc=radarTargetPixel(tx,ty,x0,y1,z,outW,outH);
+          const d=radarTargetPixel(tx,ty,x1,y1,z,outW,outH);
+          addTriangle(url,A,B,C,a,b,cc);
+          addTriangle(url,D,C,B,d,cc,b);
+        }
+      }
+    }
+  }
+
+  const updatePlacement = () => {
+    if(!host.isConnected) return;
+    const bb = getWeatherMapBounds();
+    const nw = map.latLngToLayerPoint([bb[1][0], bb[0][1]]);
+    const se = map.latLngToLayerPoint([bb[0][0], bb[1][1]]);
+    const w = Math.max(1, se.x - nw.x);
+    const h = Math.max(1, se.y - nw.y);
+    host.style.width = w + 'px';
+    host.style.height = h + 'px';
+    host.style.transform = `translate3d(${nw.x}px,${nw.y}px,0)`;
+    inner.style.transform = `scale(${w/outW},${h/outH})`;
+  };
+
+  const onMove = () => updatePlacement();
+  map.on('zoom viewreset move', onMove);
+  updatePlacement();
+
+  const layer = {
+    _radarCss:true,
+    _host:host,
+    _inner:inner,
+    _pane:opt.pane,
+    _successfulTiles:() => successfulTiles,
+    _failedTiles:() => failedTiles,
+    setOpacity(v){ host.style.opacity=String(v); return this; },
+    redraw(){ updatePlacement(); return this; },
+    setBounds(){ updatePlacement(); return this; },
+    getElement(){ return host; },
+    remove(){
+      map.off('zoom viewreset move', onMove);
+      if(host.parentNode) host.parentNode.removeChild(host);
+      return this;
+    }
+  };
+  opt.store.push(layer);
+  return layer;
 }
 
 let radarSvgOverlaySeq = 0;
@@ -1216,15 +1359,15 @@ function addWarpedRadarSvgOverlay(map, opt){
 function addOneRadarLayer(map, time, element, paneName, opacity, zIndex){
   const url = makeNowcTileUrl(time, element);
   if(map === mapJapan){
-    // Canvas画素読み取りを使わないSVG三角形ワープ。JMAタイルのCORS制約でも表示できる。
+    // 通常のHTML <img> をCSS三角形ワープする。SVG/CanvasのCORS問題を避ける。
     try{
-      addWarpedRadarSvgOverlay(map, {
+      addWarpedRadarCssOverlay(map, {
         z:5, pane:paneName, zIndex, opacity, store:rainLayers,
         tileUrl:(z,x,y) => url.replace('{z}', z).replace('{x}', x).replace('{y}', y)
       });
     }catch(e){
       radarTileStats.error++;
-      console.warn('日本全土の雨雲SVG再投影に失敗:', e);
+      console.warn('日本全土の雨雲CSS再投影に失敗:', e);
     }
     updateDebugLine();
     return;
@@ -1251,12 +1394,17 @@ function addRadar(map, time){
   updateRainPaneStyle();
   const mode = document.getElementById('radarMode').value;
   const rainOpacity = +document.getElementById('rainOpacity').value;
-  // hrpns は降水強度本体です。雨がない場所は透明なので、単独だと「何も出ていない」ように見えます。
-  // hrpns_nd は欠測域などを示す補助レイヤーです。both では先に薄く載せ、上から降水強度を重ねます。
-  if(mode === 'both' || mode === 'hrpns_nd'){
+
+  // hrpns_nd は疎な欠測域タイルで、描画内容のないタイルが404になることが多い。
+  // 全国表示の「降水＋欠測域」では降水本体(hrpns)を優先し、404大量発生を避ける。
+  // 「欠測域のみ」を明示選択した場合は全国側でもhrpns_ndを表示する。
+  const wantNd = (mode === 'hrpns_nd') || (mode === 'both' && map !== mapJapan);
+  const wantRain = (mode === 'both' || mode === 'hrpns');
+
+  if(wantNd){
     addOneRadarLayer(map, time, 'hrpns_nd', 'rainNDPane', Math.min(0.35, rainOpacity * 0.45), 740);
   }
-  if(mode === 'both' || mode === 'hrpns'){
+  if(wantRain){
     addOneRadarLayer(map, time, 'hrpns', 'rainPane', rainOpacity, 780);
   }
 }
@@ -1600,7 +1748,7 @@ function updateDebugLine(){
   const wbgtInfo = `暑さ指数：全国県庁所在地 ${natN}地点${wbgtStatus.national?'（'+wbgtStatus.national+'）':''} / 県内 ${prefN}地点${wbgtStatus.pref?'（'+wbgtStatus.pref+'）':''}。`;
   document.getElementById('debugBox').textContent =
     `取得：雨雲レーダー ${nowcTimes.length}件、天気図 ${wxMaps.length}件、ひまわり ${himawariTimes.length}件。` +
-    `雨雲タイル読込 ${radarTileStats.loaded}件 / エラー ${radarTileStats.error}件（全国SVG＋地域）。` +
+    `雨雲タイル読込 ${radarTileStats.loaded}件 / エラー ${radarTileStats.error}件（全国CSS再投影＋地域）。` +
     `衛星タイル読込 ${himawariTileStats.loaded}件 / エラー ${himawariTileStats.error}件。` +
     wbgtInfo +
     `雨雲表示=${document.getElementById('radarMode').value}。` +
