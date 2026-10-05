@@ -1111,7 +1111,9 @@ function radarTileRange(z){
   };
 }
 
+let radarSvgOverlaySeq = 0;
 function addWarpedRadarSvgOverlay(map, opt){
+  const overlayId = 'radarWarp' + (++radarSvgOverlaySeq);
   const NS = 'http://www.w3.org/2000/svg';
   const XLINK = 'http://www.w3.org/1999/xlink';
   const outW = WARP_OUT_W;
@@ -1137,7 +1139,7 @@ function addWarpedRadarSvgOverlay(map, opt){
     const af = affineFromTriangles(s0,s1,s2,d0,d1,d2);
     if(!af) return;
 
-    const clipId = `radarClip-${Date.now().toString(36)}-${clipNo++}`;
+    const clipId = `${overlayId}-clip-${clipNo++}`;
     const cp = document.createElementNS(NS, 'clipPath');
     cp.setAttribute('id', clipId);
     cp.setAttribute('clipPathUnits', 'userSpaceOnUse');
@@ -1157,7 +1159,7 @@ function addWarpedRadarSvgOverlay(map, opt){
   let tileNo = 0;
   for(let ty=range.minY; ty<=range.maxY; ty++){
     for(let tx=range.minX; tx<=range.maxX; tx++){
-      const tileId = `radarTile-${Date.now().toString(36)}-${tileNo++}`;
+      const tileId = `${overlayId}-tile-${tileNo++}`;
       const img = document.createElementNS(NS, 'image');
       img.setAttribute('id', tileId);
       img.setAttribute('x','0'); img.setAttribute('y','0');
